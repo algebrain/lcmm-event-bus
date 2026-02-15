@@ -2,7 +2,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [event-bus :as bus]
             [malli.core :as m])
-  (:import [java.util.concurrent CountDownLatch TimeUnit]))
+  (:import [java.util UUID]
+           [java.util.concurrent CountDownLatch TimeUnit]))
 
 (defn await-on-latch [^CountDownLatch latch]
   (.await latch 1 TimeUnit/SECONDS))
@@ -19,7 +20,11 @@
                    (fn [_bus envelope]
                      (reset! received envelope)
                      (.countDown latch)))
-    (bus/publish bus :test/event {:data 42})
+    (let [published-envelope (bus/publish bus :test/event {:data 42})]
+      (is (some? (:correlation-id published-envelope)) "Published envelope should have a correlation-id")
+      (is (instance? UUID (:correlation-id published-envelope)) "correlation-id should be a UUID")
+      (is (some? (:message-id published-envelope)) "Published envelope should have a message-id")
+      (is (instance? UUID (:message-id published-envelope)) "message-id should be a UUID"))
     (is (await-on-latch latch) "Handler should have been called")
     (is (= :test/event (:message-type @received)))
     (is (= {:data 42} (:payload @received)))
@@ -111,19 +116,29 @@
 
 (deftest cycle-detection-test
   (let [bus (bus/make-bus {:max-depth 2})
-        latch (CountDownLatch. 1)]
+        latch (CountDownLatch. 1)
+        exception-atom (atom nil)]
     (bus/subscribe bus :event/a
                    (fn [b envelope]
-                     ;; This should throw an exception, as B will publish A again
-                     (is (thrown? IllegalStateException
-                                  (bus/publish b :event/b {:b 1} {:parent-envelope envelope})))
-                     (.countDown latch)))
+                     ;; Publish B, which will in turn publish A and cause the cycle
+                     (bus/publish b :event/b {:b 1} {:parent-envelope envelope})))
     (bus/subscribe bus :event/b
                    (fn [b envelope]
-                     (bus/publish b :event/a {:a 2} {:parent-envelope envelope})))
+                     (try
+                       (bus/publish b :event/a {:a 2} {:parent-envelope envelope})
+                       (catch IllegalStateException e
+                         (reset! exception-atom e))
+                       (finally
+                         (.countDown latch)))))
 
-    (bus/publish bus :event/a {:a 1})
-    (is (await-on-latch latch) "Cycle detection should have triggered")
+    (let [root-envelope (bus/publish bus :event/a {:a 1})]
+      (is (await-on-latch latch) "Cycle detection should have triggered")
+      (is (instance? IllegalStateException @exception-atom) "An IllegalStateException should have been caught")
+      (is (clojure.string/starts-with? (.getMessage @exception-atom) "Cycle detected"))
+
+      ;; Also test that the returned envelope is correct
+      (is (= :event/a (:message-type root-envelope)))
+      (is (some? (:correlation-id root-envelope))))
     (bus/close bus)))
 
 (deftest max-depth-test

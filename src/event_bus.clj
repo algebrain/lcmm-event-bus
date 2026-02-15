@@ -130,7 +130,7 @@
 (defn publish
   "Publishes an event.
    To derive an event from another, pass the parent as `:parent-envelope` in opts.
-   Returns the number of handlers invoked."
+   Returns the created event envelope."
   [bus event-type payload & [opts]]
   (ensure-not-closed! bus)
   (let [parent-envelope (:parent-envelope opts)
@@ -150,7 +150,7 @@
                            :correlation-id (:correlation-id envelope)
                            :payload (:payload envelope)
                            :errors (me/humanize (m/explain schema (:payload envelope)))}))))
-    (count handlers)))
+    envelope))
 
 (defn unsubscribe
   "Unsubscribes a handler by its reference or metadata."

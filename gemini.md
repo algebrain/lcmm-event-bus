@@ -25,7 +25,7 @@ The current implementation in `event_bus.clj` provides a fully featured event bu
 
 - **`make-bus`**: The constructor. Supports `:unlimited` and `:buffered` async modes and accepts an optional `:logger` function for observability.
 - **`subscribe`**: Subscribes a handler to an event. The handler function must have the signature `(fn [bus envelope])` to allow it to publish derived events.
-- **`publish`**: The main function for publishing events.
+- **`publish`**: The main function for publishing events. It returns the created event `envelope`, allowing the caller to retrieve the `correlation-id` for tracking.
     - It supports creating both root events and derived events.
     - To create a derived event, the caller passes the original message as `:parent-envelope` in the options map. This activates the causality tracking mechanisms (cycle/depth detection).
 - **Error Isolation**: Subscriber handlers are wrapped in a `try/catch` block to ensure that an error in one does not affect others.

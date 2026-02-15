@@ -66,6 +66,7 @@ Publishes an event to the bus.
 - **Signature:** `(publish bus event-type payload & [opts])`
 - **`payload`:** The event data (usually a map).
 - **`opts`:** (optional) An options map.
+- **Return Value:** The function returns the created event `envelope`. This is a map containing metadata (`message-id`, `correlation-id`, etc.) and the `payload` itself. This allows the event initiator to get the generated `correlation-id` for further tracking.
 
 #### Options for `publish`
 
