@@ -22,6 +22,7 @@
   - `:unlimited` (по умолчанию): Каждый обработчик выполняется в новом виртуальном потоке.
   - `:buffered`: События помещаются в очередь фиксированного размера, из которой их забирает ограниченный пул потоков.
 - `:max-depth`: Максимальная глубина цепочки событий (по умолчанию: `20`).
+- `:schema-registry`: **Обязательный** реестр схем событий (map of versions).
 - `:logger`: Функция для логирования, принимающая `(fn [level data])`.
 - `:buffer-size`: (для режима `:buffered`) Размер очереди (по умолчанию: `1024`).
 - `:concurrency`: (для режима `:buffered`) Количество потоков-обработчиков (по умолчанию: `4`).
@@ -32,6 +33,7 @@
   (bus/make-bus {:mode :buffered
                  :buffer-size 500
                  :concurrency 8
+                 :schema-registry {:user/created {"1.0" [:map [:id :int] [:email :string]]}}
                  :logger (fn [lvl d] (println "LOG:" lvl d))}))
 ```
 
@@ -56,7 +58,8 @@
                  (bus/publish bus
                               :email/send-welcome
                               (:payload envelope)
-                              {:parent-envelope envelope})))
+                              {:parent-envelope envelope
+                               :module :mailer})))
 ```
 
 ### `publish`
@@ -65,17 +68,22 @@
 
 - **Сигнатура:** `(publish bus event-type payload & [opts])`
 - **`payload`:** Данные события (обычно карта).
-- **`opts`:** (опционально) Карта опций.
+- **`opts`:** (опционально) Карта опций. Внутри требуются `:module` и (опционально) `:schema-version`.
 - **Возвращаемое значение:** Функция возвращает созданный "конверт" события (`envelope`). Это карта, содержащая метаданные (`message-id`, `correlation-id` и т.д.) и сами данные (`payload`). Это позволяет инициатору события получить сгенерированный `correlation-id` для дальнейшего отслеживания.
+
+Валидация в `publish` выполняется **строго** по каноническому реестру схем, переданному в `make-bus`.
+Если схема отсутствует или payload невалиден, `publish` бросает исключение.
 
 #### Опции для `publish`
 
 - `:parent-envelope`: **Ключевая опция для контроля причинности.** Если вы публикуете событие в ответ на другое, передайте сюда исходный "конверт" (`envelope`). Шина автоматически извлечет `CorrelationID` и обновит `CausationPath`.
+- `:module`: **Обязательная опция.** Идентификатор модуля-инициатора (keyword). Используется для контроля циклов по паре `(module, event-type)`.
+- `:schema-version`: (опционально) Версия схемы в реестре. По умолчанию `"1.0"`.
 
 **Пример (корневое событие):**
 ```clojure
 ;; Кто-то залогинился
-(bus/publish a-bus :user/logged-in {:user-id 123})
+(bus/publish a-bus :user/logged-in {:user-id 123} {:module :auth})
 ```
 
 **Пример (производное событие):**
@@ -86,7 +94,8 @@
     (bus/publish bus
                  :audit/user-activity
                  {:activity "login" :user user-id}
-                 {:parent-envelope envelope}))) ; <-- Передача родителя
+                 {:parent-envelope envelope
+                  :module :audit}))) ; <-- Передача родителя и модуля
 ```
 
 ### `unsubscribe`
