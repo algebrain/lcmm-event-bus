@@ -10,7 +10,7 @@ This event bus enables robust communication between different parts of an applic
 - **Causality Control:** The bus automatically tracks the chain of events that led to the creation of a new event. This allows it to detect and prevent execution cycles and excessively long event chains.
 - **Schema Validation:** By leveraging `malli`, the bus can validate event payloads at the subscriber level, ensuring data integrity throughout the system.
 
-For a deeper dive into the architectural principles, see [ARCH.md](docs_en/ARCH.md).
+For a deeper dive into the architectural principles, see [ARCH.md](docs/ARCH.md).
 
 ## Getting Started
 
@@ -26,4 +26,4 @@ The test configuration is located in `tests.edn`.
 
 ## API Documentation
 
-For detailed API documentation, function signatures, and usage examples, please see **[BUS.md](docs_en/BUS.md)**.
+For detailed API documentation, function signatures, and usage examples, please see **[BUS.md](docs/BUS.md)**.
