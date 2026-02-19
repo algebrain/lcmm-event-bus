@@ -2,3 +2,5 @@
 test-report-*.xml
 test-report-*.txt
 plan-*.md
+.answers
+.plans
