@@ -1,12 +1,21 @@
 (ns event-bus-test
   (:require [clojure.test :refer [deftest is testing]]
+            [datahike.api]
             [event-bus :as bus]
-            [malli.core :as m])
+            [event-bus-dispatcher :as dispatcher]
+            [event-bus-persistence :as persistence]
+            [event-bus-runtime :as runtime]
+            [malli.core :as m]
+            [support.persistence-memory :as pm]
+            [event-bus-persistence-datahike :as dh])
   (:import [java.util UUID]
            [java.util.concurrent CountDownLatch TimeUnit]))
 
 (defn await-on-latch [^CountDownLatch latch]
   (.await latch 1 TimeUnit/SECONDS))
+
+(def memory-store pm/memory-store)
+(def status-by-id pm/status-by-id)
 
 (def any-schema (m/schema :any))
 
@@ -316,6 +325,91 @@
     (is (vector? (:causation-path @child-event)))
     (is (= [[:m/c1 :c1] [:m/c2 :c2]] (:causation-path @child-event)))
     (bus/close bus)))
+
+(deftest durable-persists-message-test
+  (let [{:keys [store]} (memory-store)
+        bus (make-test-bus :durable "mem" :persistence store :dispatcher-enabled false)
+        env (bus/publish bus :test/event {:data 1} {:module :test/durable})
+        pending (persistence/fetch-pending! store 10)]
+    (is (= 1 (count pending)))
+    (is (= (:message-id env) (:message-id (first pending))))
+    (bus/close bus)))
+
+(deftest durable-dispatcher-delivers-test
+  (let [{:keys [store]} (memory-store)
+        bus (make-test-bus :durable "mem" :persistence store :dispatcher-interval-ms 50)
+        latch (CountDownLatch. 1)]
+    (bus/subscribe bus :test/event (fn [_ _] (.countDown latch)))
+    (bus/publish bus :test/event {:data 1} {:module :test/durable})
+    (is (await-on-latch latch) "Handler should be called by dispatcher")
+    (is (empty? (persistence/fetch-pending! store 10)))
+    (bus/close bus)))
+
+(deftest durable-retry-increments-attempts-test
+  (let [{:keys [store]} (memory-store)
+        bus (make-test-bus :durable "mem"
+                           :persistence store
+                           :dispatcher-enabled false
+                           :dispatcher-batch-size 2
+                           :dispatcher-max-attempts 3
+                           :mode :buffered
+                           :buffer-size 1
+                           :concurrency 0)]
+    (bus/subscribe bus :test/event (fn [_ _] nil))
+    (bus/publish bus :test/event {:data 1} {:module :test/durable})
+    (bus/publish bus :test/event {:data 2} {:module :test/durable})
+    (dispatcher/dispatch-once! bus store (:opts bus))
+    (let [pending (persistence/fetch-pending! store 10)]
+      (is (= 1 (count pending)))
+      (is (= 1 (:attempts (first pending)))))
+    (bus/close bus)))
+
+(deftest durable-fails-after-max-attempts-test
+  (let [{:keys [store state]} (memory-store)
+        bus (make-test-bus :durable "mem"
+                           :persistence store
+                           :dispatcher-enabled false
+                           :dispatcher-batch-size 2
+                           :dispatcher-max-attempts 1
+                           :mode :buffered
+                           :buffer-size 1
+                           :concurrency 0)]
+    (bus/subscribe bus :test/event (fn [_ _] nil))
+    (let [env1 (bus/publish bus :test/event {:data 1} {:module :test/durable})
+          env2 (bus/publish bus :test/event {:data 2} {:module :test/durable})]
+      (dispatcher/dispatch-once! bus store (:opts bus))
+      (is (= :sent (status-by-id state (:message-id env1))))
+      (is (= :failed (status-by-id state (:message-id env2)))))
+    (bus/close bus)))
+
+(deftest inbox-deduplication-test
+  (let [{:keys [store]} (memory-store)
+        bus (make-test-bus :durable "mem" :persistence store :dispatcher-enabled false)
+        called (atom 0)]
+    (bus/subscribe bus :test/event (fn [_ _] (swap! called inc)) {:inbox true})
+    (let [env (bus/publish bus :test/event {:data 1} {:module :test/durable})]
+      (runtime/deliver! bus env)
+      (runtime/deliver! bus env)
+      (is (= 1 @called)))
+    (bus/close bus)))
+
+(deftest non-durable-still-delivers-test
+  (let [bus (make-test-bus)
+        latch (CountDownLatch. 1)]
+    (bus/subscribe bus :test/event (fn [_ _] (.countDown latch)))
+    (bus/publish bus :test/event {:data 1} {:module :test/basic})
+    (is (await-on-latch latch))
+    (bus/close bus)))
+
+(deftest close-releases-datahike-connection-test
+  (let [released (atom false)
+        dh-store (dh/->DatahikeStore {} ::conn)
+        bus (make-test-bus :durable "mem"
+                           :persistence dh-store
+                           :dispatcher-enabled false)]
+    (with-redefs [datahike.api/release (fn [_] (reset! released true))]
+      (bus/close bus)
+      (is (true? @released) "Datahike release should be called"))))
 
 
 (comment
