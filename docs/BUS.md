@@ -16,7 +16,8 @@
 
 #### Опции
 
-Вы можете передать карту опций для конфигурации:
+Вы можете передать опции как именованные аргументы.  
+`make-bus` бросает исключение, если не указан `:schema-registry`.
 
 - `:mode`: Режим работы.
   - `:unlimited` (по умолчанию): Каждый обработчик выполняется в новом виртуальном потоке.
@@ -30,11 +31,12 @@
 **Пример с опциями:**
 ```clojure
 (def buffered-bus
-  (bus/make-bus {:mode :buffered
-                 :buffer-size 500
-                 :concurrency 8
-                 :schema-registry {:user/created {"1.0" [:map [:id :int] [:email :string]]}}
-                 :logger (fn [lvl d] (println "LOG:" lvl d))}))
+  (bus/make-bus
+    :mode :buffered
+    :buffer-size 500
+    :concurrency 8
+    :schema-registry {:user/created {"1.0" [:map [:id :int] [:email :string]]}}
+    :logger (fn [lvl d] (println "LOG:" lvl d))))
 ```
 
 ## Основные функции

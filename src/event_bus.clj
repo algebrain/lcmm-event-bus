@@ -13,7 +13,9 @@
   [bus level data]
   (when-let [logger (-> bus :opts :logger)]
     (try
-      (logger level data)
+      (let [component (or (-> bus :opts :component) :event-bus)
+            payload (merge {:component component} data)]
+        (logger level payload))
       (catch Throwable _
         ;; Never allow logger failures to break the critical path
         nil))))
@@ -69,6 +71,8 @@
   [& {:keys [mode max-depth]
       :or   {mode :unlimited, max-depth 20}
       :as   opts}]
+  (when (nil? (:schema-registry opts))
+    (throw (IllegalArgumentException. "Missing required :schema-registry in make-bus options.")))
   (let [bus-map {:listeners (atom {})
                  :closed?   (atom false)
                  :opts      (merge {:mode mode :max-depth max-depth} opts)}]
@@ -110,14 +114,16 @@
   (when @(:closed? bus)
     (throw (IllegalStateException. "Event bus is closed."))))
 
-(defn- submit-task [bus f]
+(defn- submit-task [bus f & [context]]
   (ensure-not-closed! bus)
   (let [task (fn []
                (try
                  (f)
                  (catch Throwable e
-                   (log! bus :error {:event :handler-failed
-                                     :exception e}))))]
+                   (log! bus :error
+                         (merge {:event :handler-failed
+                                 :exception e}
+                                (when (map? context) context))))))]
     (case (:mode (:opts bus))
       :unlimited
       (.submit ^ExecutorService (:executor bus) ^Runnable task)
@@ -167,7 +173,8 @@
     (when-not publish-schema
       (log! bus :error {:event :publish-schema-missing
                         :event-type event-type
-                        :schema-version schema-version})
+                        :schema-version schema-version
+                        :correlation-id (:correlation-id envelope)})
       (throw (IllegalStateException.
                (str "Missing schema for event " event-type " version " schema-version))))
     (when-not (m/validate publish-schema payload)
@@ -180,12 +187,19 @@
       (throw (IllegalStateException.
                (str "Publish schema validation failed for event " event-type " version " schema-version))))
     (log! bus :info {:event :event-published
+                     :correlation-id (:correlation-id envelope)
                      :envelope envelope})
     (doseq [{:keys [handler schema]} handlers]
       (if-not schema
-        (submit-task bus #(handler bus envelope))
+        (submit-task bus
+                     #(handler bus envelope)
+                     {:event-type event-type
+                      :correlation-id (:correlation-id envelope)})
         (if (m/validate schema (:payload envelope))
-          (submit-task bus #(handler bus envelope))
+          (submit-task bus
+                       #(handler bus envelope)
+                       {:event-type event-type
+                        :correlation-id (:correlation-id envelope)})
           (log! bus :warn {:event :schema-validation-failed
                            :event-type event-type
                            :correlation-id (:correlation-id envelope)

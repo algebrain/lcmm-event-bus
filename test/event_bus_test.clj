@@ -255,6 +255,10 @@
                  (bus/publish bus :missing/event {} {:module :test/missing})))
     (bus/close bus)))
 
+(deftest make-bus-requires-schema-registry-test
+  (is (thrown? IllegalArgumentException
+               (bus/make-bus))))
+
 (deftest publish-schema-version-selection-test
   (let [bus (make-test-bus)]
     (let [env-v1 (bus/publish bus :versioned/event {:v 1} {:module :test/version})]
