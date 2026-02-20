@@ -26,4 +26,4 @@ The test configuration is located in `tests.edn`.
 
 ## API Documentation
 
-For detailed API documentation, function signatures, and usage examples, please see **[BUS.md](docs/BUS.md)**.
+For detailed API documentation, function signatures, and usage examples, please see **[BUS.md](docs/BUS.md)** and **[TRANSACT.md](docs/TRANSACT.md)**.

@@ -1,5 +1,6 @@
 (ns event-bus-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.core.async :as async]
+            [clojure.test :refer [deftest is testing]]
             [event-bus :as bus]
             [malli.core :as m])
   (:import [java.util UUID]
@@ -36,6 +37,12 @@
 
 (defn make-test-bus [& {:as opts}]
   (apply bus/make-bus (apply concat (merge {:schema-registry test-registry} opts))))
+
+(defn make-tx-store []
+  {:db/type :datahike
+   :datahike/config {:store {:backend :mem
+                             :id (str (UUID/randomUUID))}
+                     :schema-flexibility :write}})
 
 ;; =============================================================================
 ;; Phase 1: Adapted Tests
@@ -321,6 +328,75 @@
     (is (= [[:m/c1 :c1] [:m/c2 :c2]] (:causation-path @child-event)))
     (bus/close bus)))
 
+
+(deftest transact-success-test
+  (let [bus (make-test-bus :tx-store (make-tx-store))
+        called (atom 0)]
+    (bus/subscribe bus :test/event (fn [_ _] (swap! called inc) true))
+    (let [{:keys [result-promise result-chan]}
+          (bus/transact bus [{:event-type :test/event
+                              :payload {:data 1}
+                              :module :test/tx}])
+          result (deref result-promise 2000 ::timeout)
+          chan-result (async/<!! result-chan)]
+      (is (not= result ::timeout))
+      (is (:ok? result))
+      (is (:ok? chan-result))
+      (is (= 1 @called)))
+    (bus/close bus)))
+
+(deftest transact-handler-failure-test
+  (let [bus (make-test-bus :tx-store (make-tx-store) :handler-max-retries 1)
+        called (atom 0)]
+    (bus/subscribe bus :test/event (fn [_ _] (swap! called inc) false))
+    (let [{:keys [result-promise]}
+          (bus/transact bus [{:event-type :test/event
+                              :payload {:data 1}
+                              :module :test/tx}])
+          result (deref result-promise 2000 ::timeout)]
+      (is (not= result ::timeout))
+      (is (false? (:ok? result)))
+      (is (= 1 @called)))
+    (bus/close bus)))
+
+(deftest transact-timeout-test
+  (let [bus (make-test-bus :tx-store (make-tx-store)
+                           :tx-handler-timeout 10
+                           :handler-max-retries 1)
+        called (atom 0)]
+    (bus/subscribe bus :test/event
+                   (fn [_ _]
+                     (swap! called inc)
+                     (Thread/sleep 50)
+                     true))
+    (let [{:keys [result-promise]} (bus/transact bus
+                                                 [{:event-type :test/event
+                                                   :payload {:data 1}
+                                                   :module :test/tx}])
+          result (deref result-promise 2000 ::timeout)]
+      (is (not= result ::timeout))
+      (is (false? (:ok? result)))
+      (is (= 1 @called)))
+    (bus/close bus)))
+
+(deftest transact-retry-success-test
+  (let [bus (make-test-bus :tx-store (make-tx-store)
+                           :handler-max-retries 2
+                           :handler-backoff-ms 10)
+        called (atom 0)]
+    (bus/subscribe bus :test/event
+                   (fn [_ _]
+                     (let [n (swap! called inc)]
+                       (if (= n 1) false true))))
+    (let [{:keys [result-promise]} (bus/transact bus
+                                                 [{:event-type :test/event
+                                                   :payload {:data 1}
+                                                   :module :test/tx}])
+          result (deref result-promise 3000 ::timeout)]
+      (is (not= result ::timeout))
+      (is (:ok? result))
+      (is (= 2 @called)))
+    (bus/close bus)))
 
 (comment
   (require '[kaocha.repl :as k])

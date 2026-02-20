@@ -1,5 +1,8 @@
 (ns event-bus
-  (:require [malli.core :as m]
+  (:require [clojure.core.async :as async]
+            [clojure.edn :as edn]
+            [datahike.api :as d]
+            [malli.core :as m]
             [malli.error :as me])
   (:import [java.util UUID]
            [java.util.concurrent Executors ExecutorService TimeUnit ArrayBlockingQueue]))
@@ -52,6 +55,262 @@
                            :module module})
            :causation-path new-causation-path)))
 
+;; ============================
+;; transact: Internal DB and Worker Helpers
+;; ============================
+
+(def ^:private tx-schema
+  [{:db/ident :tx/id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :tx/status
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :tx/created-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :tx/updated-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :msg/id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :msg/tx
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :msg/event-type
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :msg/payload
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :msg/module
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :msg/schema-version
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :msg/correlation-id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :msg/message-id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :h/id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
+   {:db/ident :h/msg
+    :db/valueType :db.type/ref
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :h/handler-id
+    :db/valueType :db.type/uuid
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :h/status
+    :db/valueType :db.type/keyword
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :h/retry-count
+    :db/valueType :db.type/long
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :h/last-error
+    :db/valueType :db.type/string
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :h/updated-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}
+   {:db/ident :h/next-at
+    :db/valueType :db.type/instant
+    :db/cardinality :db.cardinality/one}])
+
+(defn- now-inst []
+  (java.util.Date.))
+
+(defn- init-datahike! [{:keys [datahike/config]}]
+  (when-not config
+    (throw (IllegalArgumentException. "Missing :datahike/config in :tx-store.")))
+  (try
+    (d/create-database config)
+    (catch Throwable _ nil))
+  (let [conn (d/connect config)]
+    (d/transact conn tx-schema)
+    conn))
+
+(defn- init-tx-store! [tx-store]
+  (case (:db/type tx-store)
+    :datahike
+    {:type :datahike
+     :config (:datahike/config tx-store)
+     :conn (init-datahike! tx-store)}
+    (throw (IllegalArgumentException.
+             (str "Unsupported :db/type in :tx-store: " (:db/type tx-store))))))
+
+(defn- ensure-tx-store! [bus]
+  (when-not (:tx-store bus)
+    (throw (IllegalStateException. "transact requires :tx-store in make-bus options."))))
+
+(defn- find-handler-by-id [listeners event-type handler-id]
+  (some (fn [{:keys [id] :as entry}]
+          (when (= id handler-id) entry))
+        (get listeners event-type [])))
+
+(defn- complete-tx! [bus tx-id ok? error]
+  (let [conn (-> bus :tx-store :conn)
+        now (now-inst)]
+    (d/transact conn
+                [{:tx/id tx-id
+                  :tx/status (if ok? :ok :failed)
+                  :tx/updated-at now}]))
+  (when-let [{:keys [promise chan]} (get @(:tx-results bus) tx-id)]
+    (let [result (if ok?
+                   {:ok? true :tx-id tx-id}
+                   {:ok? false :tx-id tx-id :error error})]
+      (deliver promise result)
+      (async/put! chan result)
+      (swap! (:tx-results bus) dissoc tx-id))))
+
+(defn- tx-status [db tx-eid]
+  (let [statuses (map first
+                      (d/q '[:find ?status
+                             :in $ ?tx
+                             :where
+                             [?msg :msg/tx ?tx]
+                             [?h :h/msg ?msg]
+                             [?h :h/status ?status]]
+                           db tx-eid))]
+    (cond
+      (empty? statuses) :ok
+      (some #{:failed :timeout} statuses) :failed
+      (every? #{:ok} statuses) :ok
+      :else :pending)))
+
+(defn- update-tx-status! [bus tx-eid tx-id]
+  (let [db (d/db (-> bus :tx-store :conn))
+        status (tx-status db tx-eid)]
+    (when (#{:ok :failed} status)
+      (complete-tx! bus tx-id (= status :ok) (when (= status :failed) :handler-failed)))))
+
+(defn- process-handler! [bus row]
+  (let [[h-eid msg-eid tx-eid event-type payload module schema-version
+         correlation-id message-id handler-id retry-count] row
+        listeners @(:listeners bus)
+        handler-entry (find-handler-by-id listeners event-type handler-id)
+        now (now-inst)
+        max-retries (or (-> bus :opts :handler-max-retries) 3)
+        backoff-ms (or (-> bus :opts :handler-backoff-ms) 1000)
+        timeout-ms (or (-> bus :opts :tx-handler-timeout) 10000)
+        envelope {:message-id message-id
+                  :correlation-id correlation-id
+                  :causation-path []
+                  :message-type event-type
+                  :module module
+                  :schema-version schema-version
+                  :payload (edn/read-string payload)}
+        result (if-not handler-entry
+                 {:status :failed
+                  :retryable? false
+                  :error {:event :handler-missing}}
+                 (let [{:keys [handler schema]} handler-entry]
+                   (if (and schema (not (m/validate schema payload)))
+                     {:status :failed
+                      :retryable? false
+                      :error {:event :schema-validation-failed
+                              :errors (me/humanize (m/explain schema payload))}}
+                     (let [value (try
+                                   (deref (future (handler bus envelope))
+                                          timeout-ms
+                                          ::timeout)
+                                   (catch Throwable e
+                                     {:error e}))]
+                       (cond
+                         (and (map? value) (:error value))
+                         {:status :failed
+                          :retryable? true
+                          :error {:event :handler-exception
+                                  :exception (:error value)}}
+
+                         (= value ::timeout)
+                         {:status :timeout
+                          :retryable? true
+                          :error {:event :handler-timeout}}
+
+                         (true? value)
+                         {:status :ok
+                          :retryable? false}
+
+                         :else
+                         {:status :failed
+                          :retryable? true
+                          :error {:event :handler-returned-false}})))))
+        {:keys [status retryable? error]} result
+        next-retry (inc (long retry-count))
+        exhausted? (and retryable? (>= next-retry max-retries))
+        final-status (cond
+                       (= status :ok) :ok
+                       exhausted? status
+                       retryable? :pending
+                       :else status)
+        next-at (if (and retryable? (not exhausted?))
+                  (java.util.Date. (+ (.getTime now) backoff-ms))
+                  now)
+        update {:db/id h-eid
+                :h/status final-status
+                :h/retry-count (if (= status :ok) retry-count next-retry)
+                :h/updated-at now
+                :h/next-at next-at}]
+    (cond-> update
+      error (assoc :h/last-error (pr-str error)))))
+
+(defn- process-pending-handlers! [bus]
+  (let [conn (-> bus :tx-store :conn)
+        db (d/db conn)
+        now (now-inst)
+        rows (d/q '[:find ?h ?msg ?tx ?event-type ?payload ?module ?schema-version
+                           ?correlation-id ?message-id ?handler-id ?retry-count
+                    :in $ ?now
+                    :where
+                    [?h :h/status :pending]
+                    [?h :h/next-at ?next-at]
+                    [(<= ?next-at ?now)]
+                    [?h :h/msg ?msg]
+                    [?h :h/handler-id ?handler-id]
+                    [?h :h/retry-count ?retry-count]
+                    [?msg :msg/tx ?tx]
+                    [?msg :msg/event-type ?event-type]
+                    [?msg :msg/payload ?payload]
+                    [?msg :msg/module ?module]
+                    [?msg :msg/schema-version ?schema-version]
+                    [?msg :msg/correlation-id ?correlation-id]
+                    [?msg :msg/message-id ?message-id]]
+                  db now)]
+    (doseq [row rows]
+      (let [update (process-handler! bus row)
+            tx-eid (nth row 2)
+            tx-id (-> (d/pull db '[:tx/id] tx-eid) :tx/id)]
+        (d/transact conn [update])
+        (update-tx-status! bus tx-eid tx-id)))))
+
+(defn- tx-worker-loop [bus stop-flag]
+  (loop []
+    (when-not @stop-flag
+      (try
+        (process-pending-handlers! bus)
+        (catch Throwable e
+          (log! bus :error {:event :tx-worker-failed
+                            :exception e})))
+      (Thread/sleep 50)
+      (recur))))
+
+(defn- start-tx-worker! [bus]
+  (when (and (:tx-store bus) (nil? @(:tx-worker bus)))
+    (let [stop-flag (:tx-stop bus)
+          executor (:tx-executor bus)
+          worker (.submit ^ExecutorService executor
+                          ^Runnable
+                          (fn [] (tx-worker-loop bus stop-flag)))]
+      (reset! (:tx-worker bus) worker))))
+
 
 ;; ============================
 ;; Bus Constructor
@@ -75,36 +334,48 @@
     (throw (IllegalArgumentException. "Missing required :schema-registry in make-bus options.")))
   (let [bus-map {:listeners (atom {})
                  :closed?   (atom false)
-                 :opts      (merge {:mode mode :max-depth max-depth} opts)}]
-    (case mode
-      :unlimited
-      (assoc bus-map :executor (Executors/newVirtualThreadPerTaskExecutor))
+                 :opts      (merge {:mode mode :max-depth max-depth} opts)}
+        bus-with-executor
+        (case mode
+          :unlimited
+          (assoc bus-map :executor (Executors/newVirtualThreadPerTaskExecutor))
 
-      :buffered
-      (let [{:keys [buffer-size concurrency]
-             :or   {buffer-size 1024, concurrency 4}} opts
-            queue (ArrayBlockingQueue. buffer-size)
-            executor (Executors/newVirtualThreadPerTaskExecutor)
-            consumers (doall
-                        (repeatedly concurrency
-                                    #(.submit ^ExecutorService executor
-                                              ^Runnable
-                                              (fn []
-                                                (loop []
-                                                  (if (.isShutdown executor)
-                                                    nil
-                                                    (let [result (try
-                                                                   (let [task (.take queue)]
-                                                                     (when task (task)))
-                                                                   ::ok
-                                                                   (catch InterruptedException _
-                                                                     ::stop))]
-                                                      (when (= result ::ok)
-                                                        (recur)))))))))]
-        (assoc bus-map
-               :executor executor
-               :queue queue
-               :consumers consumers)))))
+          :buffered
+          (let [{:keys [buffer-size concurrency]
+                 :or   {buffer-size 1024, concurrency 4}} opts
+                queue (ArrayBlockingQueue. buffer-size)
+                executor (Executors/newVirtualThreadPerTaskExecutor)
+                consumers (doall
+                            (repeatedly concurrency
+                                        #(.submit ^ExecutorService executor
+                                                  ^Runnable
+                                                  (fn []
+                                                    (loop []
+                                                      (if (.isShutdown executor)
+                                                        nil
+                                                        (let [result (try
+                                                                       (let [task (.take queue)]
+                                                                         (when task (task)))
+                                                                       ::ok
+                                                                       (catch InterruptedException _
+                                                                         ::stop))]
+                                                          (when (= result ::ok)
+                                                            (recur)))))))))]
+            (assoc bus-map
+                   :executor executor
+                   :queue queue
+                   :consumers consumers)))]
+    (if-let [tx-store (:tx-store opts)]
+      (let [store (init-tx-store! tx-store)
+            bus (assoc bus-with-executor
+                       :tx-store store
+                       :tx-results (atom {})
+                       :tx-worker (atom nil)
+                       :tx-stop (atom false)
+                       :tx-executor (Executors/newVirtualThreadPerTaskExecutor))]
+        (start-tx-worker! bus)
+        bus)
+      bus-with-executor)))
 
 ;; ============================
 ;; Internal Task Submission
@@ -143,10 +414,12 @@
    The handler function must have the signature `(fn [bus envelope])`."
   [bus event-type handler & {:keys [schema meta]}]
   (ensure-not-closed! bus)
-  (swap! (:listeners bus) update event-type conj
-         (cond-> {:handler handler}
-           schema (assoc :schema schema)
-           meta (assoc :meta meta)))
+  (let [handler-id (UUID/randomUUID)]
+    (swap! (:listeners bus) update event-type conj
+           (cond-> {:handler handler
+                    :id handler-id}
+             schema (assoc :schema schema)
+             meta (assoc :meta meta))))
   bus)
 
 (defn publish
@@ -207,6 +480,99 @@
                            :errors (me/humanize (m/explain schema (:payload envelope)))}))))
     envelope))
 
+(defn transact
+  "Atomically records events in internal DB and processes them via handlers.
+   Returns a map with :op-id, :result-promise, and :result-chan."
+  [bus events]
+  (ensure-not-closed! bus)
+  (ensure-tx-store! bus)
+  (when-not (seq events)
+    (throw (IllegalArgumentException. "transact requires a non-empty list of events.")))
+  (let [tx-id (UUID/randomUUID)
+        now (now-inst)
+        registry (-> bus :opts :schema-registry)
+        listeners @(:listeners bus)
+        tx-eid (d/tempid :db.part/user)
+        base-tx {:db/id tx-eid
+                 :tx/id tx-id
+                 :tx/status :pending
+                 :tx/created-at now
+                 :tx/updated-at now}
+        result-promise (promise)
+        result-chan (async/promise-chan)
+        result-mult (async/mult result-chan)]
+    (swap! (:tx-results bus) assoc tx-id {:promise result-promise
+                                          :chan result-chan
+                                          :mult result-mult})
+    (try
+      (doseq [{:keys [event-type payload module schema-version]} events]
+        (ensure-module! module)
+        (when-not event-type
+          (throw (IllegalArgumentException. "Missing :event-type in transact event.")))
+        (let [schema-version (or schema-version "1.0")
+              event-schemas (get registry event-type)
+              publish-schema (get event-schemas schema-version)]
+          (when-not publish-schema
+            (log! bus :error {:event :publish-schema-missing
+                              :event-type event-type
+                              :schema-version schema-version
+                              :correlation-id tx-id})
+            (throw (IllegalStateException.
+                     (str "Missing schema for event " event-type " version " schema-version))))
+          (when-not (m/validate publish-schema payload)
+            (log! bus :error {:event :publish-schema-validation-failed
+                              :event-type event-type
+                              :schema-version schema-version
+                              :correlation-id tx-id
+                              :payload payload
+                              :errors (me/humanize (m/explain publish-schema payload))})
+            (throw (IllegalStateException.
+                     (str "Publish schema validation failed for event " event-type " version " schema-version))))))
+      (let [{:keys [tx-data handler-count]}
+            (reduce
+              (fn [{:keys [tx-data handler-count]} {:keys [event-type payload module schema-version]}]
+                (let [schema-version (or schema-version "1.0")
+                      msg-eid (d/tempid :db.part/user)
+                      msg-id (UUID/randomUUID)
+                      message-id (UUID/randomUUID)
+                      msg {:db/id msg-eid
+                           :msg/id msg-id
+                           :msg/tx tx-eid
+                           :msg/event-type event-type
+                           :msg/payload (pr-str payload)
+                           :msg/module module
+                           :msg/schema-version schema-version
+                           :msg/correlation-id tx-id
+                           :msg/message-id message-id}
+                      handlers (get listeners event-type [])
+                      handler-entities (mapv (fn [{:keys [id]}]
+                                               {:db/id (d/tempid :db.part/user)
+                                                :h/id (UUID/randomUUID)
+                                                :h/msg msg-eid
+                                                :h/handler-id id
+                                                :h/status :pending
+                                                :h/retry-count 0
+                                                :h/updated-at now
+                                                :h/next-at now})
+                                             handlers)]
+                  {:tx-data (into tx-data (cons msg handler-entities))
+                   :handler-count (+ handler-count (count handler-entities))}))
+              {:tx-data [base-tx]
+               :handler-count 0}
+              events)]
+        (d/transact (-> bus :tx-store :conn) tx-data)
+        (log! bus :info {:event :tx-created
+                         :tx-id tx-id})
+        (when (zero? handler-count)
+          (complete-tx! bus tx-id true nil))
+        {:op-id tx-id
+         :result-promise result-promise
+         :result-chan result-chan
+         :result-mult result-mult})
+      (catch Throwable e
+        (swap! (:tx-results bus) dissoc tx-id)
+        (throw e)))))
+
 (defn unsubscribe
   "Unsubscribes a handler by its reference or metadata."
   [bus event-type matcher]
@@ -241,6 +607,10 @@
   ([bus {:keys [timeout] :or {timeout 10000}}]
    (when (compare-and-set! (:closed? bus) false true)
      (log! bus :info {:event :bus-closing})
+     (when-let [tx-stop (:tx-stop bus)]
+       (reset! tx-stop true))
+     (when-let [tx-executor ^ExecutorService (:tx-executor bus)]
+       (.shutdown tx-executor))
      (let [executor ^ExecutorService (:executor bus)]
        (.shutdown executor)
        (when-let [consumers (:consumers bus)]

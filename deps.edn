@@ -1,6 +1,8 @@
 {:paths ["src"]
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
-        metosin/malli {:mvn/version "0.16.1"}}
+        metosin/malli {:mvn/version "0.16.1"}
+        io.replikativ/datahike {:mvn/version "0.6.1612"}
+        org.clojure/core.async {:mvn/version "1.6.681"}}
   :aliases
   {:test
    {:extra-paths ["test"]
