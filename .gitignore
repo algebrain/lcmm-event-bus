@@ -4,3 +4,5 @@ test-report-*.txt
 plan-*.md
 .answers
 .plans
+*.local
+.m2

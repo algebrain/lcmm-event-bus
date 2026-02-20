@@ -44,8 +44,7 @@
 ```clojure
 (bus/make-bus
   :schema-registry registry
-  :tx-store {:db/type :datahike
-             :datahike/config {:store {:backend :file
+  :tx-store {:datahike/config {:store {:backend :file
                                        :path "./data/event-bus"}
                                :schema-flexibility :write}}
   :tx-handler-timeout 10000
@@ -54,6 +53,7 @@
 ```
 
 Если `:tx-store` не указан, `transact` бросает исключение.
+Если `:db/type` не указан, по умолчанию используется `:datahike`.
 
 ### transact
 
