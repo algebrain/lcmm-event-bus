@@ -124,6 +124,19 @@
                   :module :audit}))) ; <-- Передача родителя и модуля
 ```
 
+### `transact`
+
+Простой пример транзакционной публикации:
+
+```clojure
+(bus/transact a-bus
+  [{:event-type :user/created
+    :payload {:user-id 42 :email "a@b.com"}
+    :module :user}])
+```
+
+Подробное описание `transact`, конфигурации `:tx-store` и контрактов обработчиков: [`./TRANSACT.md`](./TRANSACT.md).
+
 ### `unsubscribe`
 
 Отписывает обработчик от события.
