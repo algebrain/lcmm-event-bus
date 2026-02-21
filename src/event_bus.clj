@@ -1,7 +1,7 @@
 (ns event-bus
   (:require [clojure.core.async :as async]
             [clojure.edn :as edn]
-            [datahike.api :as d]
+            [db.tx-store :as tx-store]
             [malli.core :as m]
             [malli.error :as me])
   (:import [java.util UUID]
@@ -59,92 +59,8 @@
 ;; transact: Internal DB and Worker Helpers
 ;; ============================
 
-(def ^:private tx-schema
-  [{:db/ident :tx/id
-    :db/valueType :db.type/uuid
-    :db/cardinality :db.cardinality/one
-    :db/unique :db.unique/identity}
-   {:db/ident :tx/status
-    :db/valueType :db.type/keyword
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :tx/created-at
-    :db/valueType :db.type/instant
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :tx/updated-at
-    :db/valueType :db.type/instant
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :msg/id
-    :db/valueType :db.type/uuid
-    :db/cardinality :db.cardinality/one
-    :db/unique :db.unique/identity}
-   {:db/ident :msg/tx
-    :db/valueType :db.type/ref
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :msg/event-type
-    :db/valueType :db.type/keyword
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :msg/payload
-    :db/valueType :db.type/string
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :msg/module
-    :db/valueType :db.type/keyword
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :msg/schema-version
-    :db/valueType :db.type/string
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :msg/correlation-id
-    :db/valueType :db.type/uuid
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :msg/message-id
-    :db/valueType :db.type/uuid
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :h/id
-    :db/valueType :db.type/uuid
-    :db/cardinality :db.cardinality/one
-    :db/unique :db.unique/identity}
-   {:db/ident :h/msg
-    :db/valueType :db.type/ref
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :h/handler-id
-    :db/valueType :db.type/uuid
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :h/status
-    :db/valueType :db.type/keyword
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :h/retry-count
-    :db/valueType :db.type/long
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :h/last-error
-    :db/valueType :db.type/string
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :h/updated-at
-    :db/valueType :db.type/instant
-    :db/cardinality :db.cardinality/one}
-   {:db/ident :h/next-at
-    :db/valueType :db.type/instant
-    :db/cardinality :db.cardinality/one}])
-
 (defn- now-inst []
   (java.util.Date.))
-
-(defn- init-datahike! [{:keys [datahike/config]}]
-  (when-not config
-    (throw (IllegalArgumentException. "Missing :datahike/config in :tx-store.")))
-  (try
-    (d/create-database config)
-    (catch Throwable _ nil))
-  (let [conn (d/connect config)]
-    (d/transact conn tx-schema)
-    conn))
-
-(defn- init-tx-store! [tx-store]
-  (case (:db/type tx-store)
-    :datahike
-    {:type :datahike
-     :config (:datahike/config tx-store)
-     :conn (init-datahike! tx-store)}
-    (throw (IllegalArgumentException.
-             (str "Unsupported :db/type in :tx-store: " (:db/type tx-store))))))
 
 (defn- ensure-tx-store! [bus]
   (when-not (:tx-store bus)
@@ -156,12 +72,8 @@
         (get listeners event-type [])))
 
 (defn- complete-tx! [bus tx-id ok? error]
-  (let [conn (-> bus :tx-store :conn)
-        now (now-inst)]
-    (d/transact conn
-                [{:tx/id tx-id
-                  :tx/status (if ok? :ok :failed)
-                  :tx/updated-at now}]))
+  (let [now (now-inst)]
+    (tx-store/update-tx! (:tx-store bus) tx-id (if ok? :ok :failed) now))
   (when-let [{:keys [promise chan]} (get @(:tx-results bus) tx-id)]
     (let [result (if ok?
                    {:ok? true :tx-id tx-id}
@@ -170,24 +82,8 @@
       (async/put! chan result)
       (swap! (:tx-results bus) dissoc tx-id))))
 
-(defn- tx-status [db tx-eid]
-  (let [statuses (map first
-                      (d/q '[:find ?status
-                             :in $ ?tx
-                             :where
-                             [?msg :msg/tx ?tx]
-                             [?h :h/msg ?msg]
-                             [?h :h/status ?status]]
-                           db tx-eid))]
-    (cond
-      (empty? statuses) :ok
-      (some #{:failed :timeout} statuses) :failed
-      (every? #{:ok} statuses) :ok
-      :else :pending)))
-
-(defn- update-tx-status! [bus tx-eid tx-id]
-  (let [db (d/db (-> bus :tx-store :conn))
-        status (tx-status db tx-eid)]
+(defn- update-tx-status! [bus tx-id]
+  (let [status (tx-store/tx-status (:tx-store bus) tx-id)]
     (when (#{:ok :failed} status)
       (complete-tx! bus tx-id (= status :ok) (when (= status :failed) :handler-failed)))))
 
@@ -200,23 +96,24 @@
         max-retries (or (-> bus :opts :handler-max-retries) 3)
         backoff-ms (or (-> bus :opts :handler-backoff-ms) 1000)
         timeout-ms (or (-> bus :opts :tx-handler-timeout) 10000)
+        payload-value (if (string? payload) (edn/read-string payload) payload)
         envelope {:message-id message-id
                   :correlation-id correlation-id
                   :causation-path []
                   :message-type event-type
                   :module module
                   :schema-version schema-version
-                  :payload (edn/read-string payload)}
+                  :payload payload-value}
         result (if-not handler-entry
                  {:status :failed
                   :retryable? false
                   :error {:event :handler-missing}}
                  (let [{:keys [handler schema]} handler-entry]
-                   (if (and schema (not (m/validate schema payload)))
+                   (if (and schema (not (m/validate schema payload-value)))
                      {:status :failed
                       :retryable? false
                       :error {:event :schema-validation-failed
-                              :errors (me/humanize (m/explain schema payload))}}
+                              :errors (me/humanize (m/explain schema payload-value))}}
                      (let [value (try
                                    (deref (future (handler bus envelope))
                                           timeout-ms
@@ -254,42 +151,22 @@
         next-at (if (and retryable? (not exhausted?))
                   (java.util.Date. (+ (.getTime now) backoff-ms))
                   now)
-        update {:db/id h-eid
-                :h/status final-status
-                :h/retry-count (if (= status :ok) retry-count next-retry)
-                :h/updated-at now
-                :h/next-at next-at}]
+        update {:handler-row-id h-eid
+                :status final-status
+                :retry-count (if (= status :ok) retry-count next-retry)
+                :updated-at now
+                :next-at next-at}]
     (cond-> update
-      error (assoc :h/last-error (pr-str error)))))
+      error (assoc :last-error (pr-str error)))))
 
 (defn- process-pending-handlers! [bus]
-  (let [conn (-> bus :tx-store :conn)
-        db (d/db conn)
-        now (now-inst)
-        rows (d/q '[:find ?h ?msg ?tx ?event-type ?payload ?module ?schema-version
-                           ?correlation-id ?message-id ?handler-id ?retry-count
-                    :in $ ?now
-                    :where
-                    [?h :h/status :pending]
-                    [?h :h/next-at ?next-at]
-                    [(<= ?next-at ?now)]
-                    [?h :h/msg ?msg]
-                    [?h :h/handler-id ?handler-id]
-                    [?h :h/retry-count ?retry-count]
-                    [?msg :msg/tx ?tx]
-                    [?msg :msg/event-type ?event-type]
-                    [?msg :msg/payload ?payload]
-                    [?msg :msg/module ?module]
-                    [?msg :msg/schema-version ?schema-version]
-                    [?msg :msg/correlation-id ?correlation-id]
-                    [?msg :msg/message-id ?message-id]]
-                  db now)]
+  (let [now (now-inst)
+        rows (tx-store/query-pending-handlers (:tx-store bus) now)]
     (doseq [row rows]
       (let [update (process-handler! bus row)
-            tx-eid (nth row 2)
-            tx-id (-> (d/pull db '[:tx/id] tx-eid) :tx/id)]
-        (d/transact conn [update])
-        (update-tx-status! bus tx-eid tx-id)))))
+            tx-id (nth row 2)]
+        (tx-store/update-handler! (:tx-store bus) update)
+        (update-tx-status! bus tx-id)))))
 
 (defn- tx-worker-loop [bus stop-flag]
   (loop []
@@ -366,7 +243,7 @@
                    :queue queue
                    :consumers consumers)))]
     (if-let [tx-store (:tx-store opts)]
-      (let [store (init-tx-store! tx-store)
+      (let [store (tx-store/init-store tx-store)
             bus (assoc bus-with-executor
                        :tx-store store
                        :tx-results (atom {})
@@ -492,12 +369,6 @@
         now (now-inst)
         registry (-> bus :opts :schema-registry)
         listeners @(:listeners bus)
-        tx-eid (d/tempid :db.part/user)
-        base-tx {:db/id tx-eid
-                 :tx/id tx-id
-                 :tx/status :pending
-                 :tx/created-at now
-                 :tx/updated-at now}
         result-promise (promise)
         result-chan (async/promise-chan)
         result-mult (async/mult result-chan)]
@@ -529,38 +400,8 @@
             (throw (IllegalStateException.
                      (str "Publish schema validation failed for event " event-type " version " schema-version))))))
       (let [{:keys [tx-data handler-count]}
-            (reduce
-              (fn [{:keys [tx-data handler-count]} {:keys [event-type payload module schema-version]}]
-                (let [schema-version (or schema-version "1.0")
-                      msg-eid (d/tempid :db.part/user)
-                      msg-id (UUID/randomUUID)
-                      message-id (UUID/randomUUID)
-                      msg {:db/id msg-eid
-                           :msg/id msg-id
-                           :msg/tx tx-eid
-                           :msg/event-type event-type
-                           :msg/payload (pr-str payload)
-                           :msg/module module
-                           :msg/schema-version schema-version
-                           :msg/correlation-id tx-id
-                           :msg/message-id message-id}
-                      handlers (get listeners event-type [])
-                      handler-entities (mapv (fn [{:keys [id]}]
-                                               {:db/id (d/tempid :db.part/user)
-                                                :h/id (UUID/randomUUID)
-                                                :h/msg msg-eid
-                                                :h/handler-id id
-                                                :h/status :pending
-                                                :h/retry-count 0
-                                                :h/updated-at now
-                                                :h/next-at now})
-                                             handlers)]
-                  {:tx-data (into tx-data (cons msg handler-entities))
-                   :handler-count (+ handler-count (count handler-entities))}))
-              {:tx-data [base-tx]
-               :handler-count 0}
-              events)]
-        (d/transact (-> bus :tx-store :conn) tx-data)
+            (tx-store/build-tx-data (:tx-store bus) tx-id now events listeners)]
+        (tx-store/transact! (:tx-store bus) tx-data)
         (log! bus :info {:event :tx-created
                          :tx-id tx-id})
         (when (zero? handler-count)

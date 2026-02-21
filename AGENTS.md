@@ -1,66 +1,69 @@
-# Repository Guidelines
+﻿# Руководство по репозиторию
 
-## Project Structure & Module Organization
+## Структура проекта и организация модулей
 
-`src/` contains the core library code (primary namespace is `event-bus` in `src/event_bus.clj`).  
-`test/` holds unit tests (e.g., `test/event_bus_test.clj`).  
-`docs/` contains architecture notes, API docs, and behavior requirements.  
-When you ask to create a plan for operations, the plan document must be placed in `.plans/`.  
-When you ask to save an answer, it must be placed in `.answers/`.  
-Both directories are included in `.gitignore` and should not be committed.  
-Use `README.md` as the entry point, then follow links into the docs directories for deeper design details.
+`src/` содержит основной код библиотеки (основное пространство имён — `event-bus` в `src/event_bus.clj`).  
+`test/` содержит unit‑тесты (например, `test/event_bus_test.clj`).  
+`docs/` содержит документацию для пользователя библиотеки: архитектурные заметки, API‑документацию и требования к поведению. Эти документы могут содержать детали реализации шины, но лишь в том случае если это необходимо для разъяснения каких-либо вопросов, важных для пользователя библиотеки
+Когда вы просите создать план работ, документ плана должен быть размещён в `.plans/` и начинаться с `YYYY-MM-DD_`.  
+Когда вы просите сохранить ответ, он должен быть размещён в `.answers/` и начинаться с `YYYY-MM-DD_`.  
+Обе директории перечислены в `.gitignore` и не должны коммититься.  
+Если нужно создать нестандартные файлы или папки, которые не должны попадать в git, их имена можно заканчивать на `.local` или `.local.*` — такие файлы и папки будут отсеяны через `.gitignore`.  
+Используйте `README.md` как точку входа, затем следуйте ссылкам в `docs/` для подробностей.
 
-## Build, Test, and Development Commands
+## Команды сборки, тестирования и разработки
 
-This repository is a Clojure library with no separate build or run scripts. The key workflow is testing:
+Это библиотека на Clojure без отдельных скриптов сборки/запуска. Основной рабочий процесс — тесты:
 
 - `clj -M:test`  
-  Runs the full test suite via Kaocha as configured in `tests.edn`.
-- `test.bat`  
-  Windows helper that runs tests with the documentation reporter.
+  Запускает полный набор тестов через Kaocha, согласно `tests.edn`.
+- `.\test.bat`  
+  Windows‑хелпер, запускающий тесты с documentation reporter.
 
-If you need a REPL workflow, start it with your preferred `clj` invocation and load the `event-bus` namespace.
+Если нужен REPL, используйте предпочитаемый `clj`‑запуск и загрузите namespace `event-bus`.
 
-## Coding Style & Naming Conventions
+## Стиль кода и соглашения об именовании
 
-All files must be saved as UTF-8 without BOM. BOM is not allowed.  
+Все файлы должны сохраняться в UTF‑8 без BOM. BOM запрещён.  
 Для файловых операций (чтение/запись) использовать Node.js вместо PowerShell, чтобы избежать проблем с кодировкой.  
-Communication is preferred in Russian; code comments should be in English.  
-Follow idiomatic Clojure formatting: 2-space indentation, align maps and bindings, and keep pure functions small.  
-Namespace naming uses kebab-case (`event-bus`), while filenames use underscores (`event_bus.clj`).  
-Keywords follow `:domain/name` or `:module/name` patterns (e.g., `:test/event`).
+Коммуникация предпочтительна на русском; комментарии в коде — на английском.  
+Следуйте идиоматическому форматированию Clojure: отступ 2 пробела, выравнивание карт и биндингов, держите чистые функции небольшими.  
+Имена namespace — kebab-case (`event-bus`), имена файлов — с подчёркиваниями (`event_bus.clj`).  
+Ключевые слова используют формат `:domain/name` или `:module/name` (например, `:test/event`).
 
-There is no formatter or linter configured in this repo; preserve existing style and avoid reformatting unrelated code.
+В репозитории нет форматтера или линтера; сохраняйте текущий стиль и избегайте переформатирования несвязанных участков кода.
 
-## Behavior & Architecture Notes
+## Поведение и архитектурные заметки
 
-The bus is in-process and built around event envelopes. Keep these rules intact:
+Шина работает in-process и построена вокруг envelope‑сообщений. Эти правила должны оставаться неизменными:
 
-- `publish` requires `:module` in opts.
-- `:schema-registry` is required in `make-bus`; `publish` validates strictly and fails on missing/invalid schemas.
-- `:schema-version` defaults to `"1.0"`.
-- `CausationPath` is a vector of `[module event-type]` pairs with cycle detection.
-- Logger failures must not break the critical path.
-- In buffered mode, consumers run on virtual threads via the shared executor.
+- `publish` требует `:module` в opts.
+- `:schema-registry` обязателен в `make-bus`; `publish` строго валидирует и падает при отсутствии/невалидности схем.
+- `:schema-version` по умолчанию равен `"1.0"`.
+- `CausationPath` — вектор пар `[module event-type]` с детекцией циклов.
+- Ошибки логгера не должны ломать критический путь.
+- В буферизованном режиме consumers запускаются на виртуальных потоках через общий executor.
 
-## Testing Guidelines
+## Руководство по тестированию
 
-Start tests using `test.bat` in Windows.
-Tests run through Kaocha.  
-Test files live in `test/` and use `*-test` namespaces (e.g., `event-bus-test`).  
-No explicit coverage target is defined; add tests for new behavior and edge cases, especially around causality and schema validation.
+Запускайте тесты через `.\test.bat` в Windows.
+Тесты выполняются через Kaocha.  
+Тестовые файлы лежат в `test/` и используют namespace с суффиксом `*-test` (например, `event-bus-test`).  
+Явной цели по покрытию нет; добавляйте тесты для нового поведения и краевых случаев, особенно вокруг причинности и валидации схем.
 
-## Commit & Pull Request Guidelines
+Цикл тестирование‑правки начинать с тройного бипа — его делать только перед запуском первого теста в цикле. Перед каждым последующим запуском тестов в том же цикле — одинарный бип.
 
-Commit history shows short, descriptive messages (e.g., "README fix", "significant changes in code and documentation").  
-There is no strict convention, but keep commits concise and focused on a single change.
+## Рекомендации по коммитам и pull request
 
-For pull requests, include:
+История коммитов содержит короткие описательные сообщения (например, "README fix", "significant changes in code and documentation").  
+Строгого стандарта нет, но коммиты должны быть краткими и сфокусированными на одном изменении.
 
-- A brief summary of behavior changes.
-- Test command(s) run and their results.
-- Doc updates in `README.md`, `docs/` when behavior or API changes.
+Для pull request включайте:
 
-## Documentation Touchpoints
+- Краткое описание изменений поведения.
+- Команды тестов и их результаты.
+- Обновления в `README.md`, `docs/` при изменении поведения или API.
 
-If you change public API or behavior, update `docs/BUS.md`, `docs/ARCH.md` (and English variants if present) and keep `README.md` in sync.
+## Точки обновления документации
+
+Если вы меняете публичный API или поведение, обновите `docs/BUS.md`, `docs/ARCH.md` (и английские варианты, если есть) и синхронизируйте `README.md`.

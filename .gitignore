@@ -5,4 +5,5 @@ plan-*.md
 .answers
 .plans
 *.local
+*.local.*
 .m2

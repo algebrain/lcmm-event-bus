@@ -14,6 +14,24 @@ For a deeper dive into the architectural principles, see [ARCH.md](docs/ARCH.md)
 
 ## Getting Started
 
+## Quick Start
+
+```clojure
+(require '[event-bus :as bus])
+(require '[malli.core :as m])
+
+(def registry
+  {:demo/ping {"1.0" (m/schema [:map [:msg :string]])}})
+
+(def b (bus/make-bus :schema-registry registry))
+
+(bus/subscribe b :demo/ping
+               (fn [_ envelope]
+                 (println "Got:" (-> envelope :payload :msg))))
+
+(bus/publish b :demo/ping {:msg "hello"} {:module :demo})
+```
+
 ### Testing
 
 The project comes with a comprehensive test suite. To run the tests, execute the following command:

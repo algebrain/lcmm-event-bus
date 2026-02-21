@@ -2,6 +2,26 @@
 
 Этот документ описывает публичный API для `event-bus`.
 
+## Быстрый старт
+
+Минимальный рабочий пример:
+
+```clojure
+(require '[event-bus :as bus])
+(require '[malli.core :as m])
+
+(def registry
+  {:demo/ping {"1.0" (m/schema [:map [:msg :string]])}})
+
+(def b (bus/make-bus :schema-registry registry))
+
+(bus/subscribe b :demo/ping
+               (fn [_ envelope]
+                 (println "Got:" (-> envelope :payload :msg))))
+
+(bus/publish b :demo/ping {:msg "hello"} {:module :demo})
+```
+
 ## Конструктор
 
 ### `make-bus`
@@ -19,14 +39,18 @@
 Вы можете передать опции как именованные аргументы.  
 `make-bus` бросает исключение, если не указан `:schema-registry`.
 
-- `:mode`: Режим работы.
-  - `:unlimited` (по умолчанию): Каждый обработчик выполняется в новом виртуальном потоке.
-  - `:buffered`: События помещаются в очередь фиксированного размера, из которой их забирает ограниченный пул потоков.
+- `:mode`: `:unlimited` (по умолчанию) или `:buffered`.
 - `:max-depth`: Максимальная глубина цепочки событий (по умолчанию: `20`).
 - `:schema-registry`: **Обязательный** реестр схем событий (map of versions).
 - `:logger`: Функция для логирования, принимающая `(fn [level data])`.
 - `:buffer-size`: (для режима `:buffered`) Размер очереди (по умолчанию: `1024`).
 - `:concurrency`: (для режима `:buffered`) Количество потоков-обработчиков (по умолчанию: `4`).
+- `:tx-store`: Конфигурация внутренней БД для `transact` (см. `TRANSACT.md`).
+- `:tx-handler-timeout`: Таймаут обработчика в `transact` (мс, по умолчанию: `10000`).
+- `:handler-max-retries`: Количество ретраев обработчика в `transact` (по умолчанию: `3`).
+- `:handler-backoff-ms`: Задержка между ретраями (мс, по умолчанию: `1000`).
+
+Параметры `:tx-store`, `:tx-handler-timeout`, `:handler-max-retries`, `:handler-backoff-ms` используются только если включен `transact`.
 
 **Пример с опциями:**
 ```clojure
@@ -116,3 +140,23 @@
 ;; ...позже
 (bus/unsubscribe a-bus :my/event my-handler)
 ```
+
+## Envelope (структура сообщения)
+
+`envelope` — карта с метаданными и полезной нагрузкой:
+
+- `:message-id` — UUID сообщения.
+- `:correlation-id` — UUID цепочки событий.
+- `:causation-path` — вектор пар `[module event-type]`.
+- `:message-type` — тип события (keyword).
+- `:module` — модуль-инициатор (keyword).
+- `:schema-version` — версия схемы (`"1.0"` по умолчанию).
+- `:payload` — полезная нагрузка события.
+
+Если событие публикуется с `:parent-envelope`, `correlation-id` сохраняется, а `causation-path` расширяется.
+
+## Ошибки и валидация
+
+- `publish` валидирует `payload` строго по `:schema-registry`. Если схема отсутствует или `payload` невалиден — бросается исключение.
+- `:schema` в `subscribe` влияет только на вызов handler. `publish` не зависит от subscriber‑схем.
+- Возвращаемое значение handler для обычного `publish` игнорируется (в отличие от `transact`, где нужен `true`).

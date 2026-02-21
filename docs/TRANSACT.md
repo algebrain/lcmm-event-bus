@@ -26,7 +26,54 @@
 
 ## Внутренняя БД
 
-По умолчанию используется **Datahike** с backend `:file`. Пользователь библиотеки может выбрать другой backend через опции.
+По умолчанию используется **SQLite**. Пользователь библиотеки может выбрать другой backend через опции.
+
+### SQLite (по умолчанию)
+
+Используйте `:db/type :sqlite`.
+
+Минимальная конфигурация:
+
+```clojure
+{:db/type :sqlite
+ :sqlite/config {:jdbc-url "jdbc:sqlite:./data/event-bus.db"}}
+```
+
+Вместо `:jdbc-url` можно задать `:path`:
+
+```clojure
+{:db/type :sqlite
+ :sqlite/config {:path "./data/event-bus.db"}}
+```
+
+По умолчанию применяются PRAGMA для производительности:
+`journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`, `temp_store=MEMORY`.
+Их можно переопределить:
+
+```clojure
+{:db/type :sqlite
+ :sqlite/config {:path "./data/event-bus.db"
+                 :pragma {:journal_mode "WAL"
+                          :synchronous "NORMAL"
+                          :foreign_keys "ON"
+                          :temp_store "MEMORY"}}}
+```
+
+Поля `:sqlite/config`:
+
+- `:jdbc-url` — строка JDBC (обязателен, если нет `:path`).
+- `:path` — путь к файлу базы (альтернатива `:jdbc-url`).
+- `:pragma` — map PRAGMA‑параметров (см. https://www.sqlite.org/pragma.html).
+- `:payload-format` — `:edn` (по умолчанию) или `:value`.
+
+` :payload-format`:
+
+- `:edn` — payload хранится как EDN‑строка и парсится при обработке.
+- `:value` — payload парсится при чтении из БД.
+
+### Datahike
+
+Используйте `:db/type :datahike`.
 
 Пример конфигурации Datahike:
 
@@ -37,6 +84,12 @@
                    :schema-flexibility :write}}
 ```
 
+Поля `:datahike/config` описаны в официальной документации Datahike:
+https://cljdoc.org/d/io.replikativ/datahike/0.6.1596/doc/datahike-database-configuration
+
+Документация драйвера SQLite JDBC:
+https://github.com/xerial/sqlite-jdbc
+
 ## API
 
 ### make-bus
@@ -44,16 +97,22 @@
 ```clojure
 (bus/make-bus
   :schema-registry registry
-  :tx-store {:datahike/config {:store {:backend :file
-                                       :path "./data/event-bus"}
-                               :schema-flexibility :write}}
+  :tx-store {:db/type :sqlite
+             :sqlite/config {:path "./data/event-bus.db"}}
   :tx-handler-timeout 10000
   :handler-max-retries 3
   :handler-backoff-ms 1000)
 ```
 
 Если `:tx-store` не указан, `transact` бросает исключение.
-Если `:db/type` не указан, по умолчанию используется `:datahike`.
+Если `:db/type` не указан, по умолчанию используется `:sqlite`.
+
+Параметры `make-bus` для `transact`:
+
+- `:tx-store` — конфигурация внутренней БД.
+- `:tx-handler-timeout` — таймаут обработчика (мс, по умолчанию `10000`).
+- `:handler-max-retries` — максимум ретраев (по умолчанию `3`).
+- `:handler-backoff-ms` — задержка между ретраями (мс, по умолчанию `1000`).
 
 ### transact
 
@@ -75,6 +134,19 @@
 
 Успех: все обработчики всех сообщений вернули `true`.
 Ошибка: хотя бы один обработчик вернул `false`, выбросил исключение или превысил таймаут.
+
+Формат результата в `result-promise`/`result-chan`:
+
+- `{:ok? true :tx-id <uuid>}`
+- `{:ok? false :tx-id <uuid> :error <keyword>}` (например `:handler-failed`)
+
+`result-chan` закрывается после доставки результата.
+
+## Контракт обработчика `transact`
+
+- Успех: handler возвращает `true`.
+- Неуспех: `false`, исключение или таймаут.
+- Обработчик должен быть идемпотентным.
 
 ## Использование (синхронно)
 
