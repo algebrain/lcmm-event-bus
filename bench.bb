@@ -9,6 +9,14 @@
     (Long/parseLong s)
     (catch Throwable _ nil)))
 
+(def green "\u001b[1;32m")
+(def reset "\u001b[0m")
+
+(defn started-at []
+  (let [t (java.time.LocalTime/now)
+        s (.format t (java.time.format.DateTimeFormatter/ofPattern "HH:mm"))]
+    (println (str green "STARTED AT " s reset))))
+
 (defn- parse-timeout-ms [args]
   (let [timeout-ms-arg (some (fn [arg]
                                (when (str/starts-with? arg "--timeout-ms=")
@@ -46,6 +54,7 @@
         (System/exit 1)))))
 
 (defn -main [& _]
+  (started-at)
   (let [args (bench-args *command-line-args*)
         suffix (if (seq args) (str " -- " (str/join " " args)) "")]
     (run! (str "clj -J--enable-native-access=ALL-UNNAMED -M:bench-perf -m perf" suffix))))

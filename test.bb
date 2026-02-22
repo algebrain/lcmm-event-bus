@@ -7,6 +7,11 @@
 (def green "\u001b[1;32m")
 (def reset "\u001b[0m")
 
+(defn started-at []
+  (let [t (java.time.LocalTime/now)
+        s (.format t (java.time.format.DateTimeFormatter/ofPattern "HH:mm"))]
+    (println (str green "STARTED AT " s reset))))
+
 (defn banner [text]
   (println (str green text reset)))
 
@@ -46,6 +51,7 @@
         (.waitFor p 5000 TimeUnit/MILLISECONDS)
         (System/exit 1)))))
 
+(started-at)
 (banner "LINT")
 (run! "clj -J--enable-native-access=ALL-UNNAMED -M:lint")
 
