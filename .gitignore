@@ -6,4 +6,6 @@ plan-*.md
 .plans
 *.local
 *.local.*
+.m2-*
 .m2
+.clj-kondo-cache/

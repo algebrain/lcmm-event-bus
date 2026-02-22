@@ -1,5 +1,6 @@
 (ns event-bus-test
   (:require [clojure.core.async :as async]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [event-bus :as bus]
             [malli.core :as m])
@@ -55,7 +56,7 @@
      :sqlite {:db/type :sqlite
               :sqlite/config (make-sqlite-config)}
      (throw (IllegalArgumentException.
-              (str "Unsupported backend in tests: " backend))))))
+             (str "Unsupported backend in tests: " backend))))))
 
 (defn- run-with-timeout!
   [timeout-ms f]
@@ -194,7 +195,7 @@
     (let [root-envelope (bus/publish bus :event/a {:a 1} {:module :m/loop})]
       (is (await-on-latch latch) "Cycle detection should have triggered")
       (is (instance? IllegalStateException @exception-atom) "An IllegalStateException should have been caught")
-      (is (clojure.string/starts-with? (.getMessage @exception-atom) "Cycle detected"))
+      (is (str/starts-with? (.getMessage @exception-atom) "Cycle detected"))
 
       ;; Also test that the returned envelope is correct
       (is (= :event/a (:message-type root-envelope)))
@@ -352,7 +353,6 @@
     (is (= [[:m/c1 :c1] [:m/c2 :c2]] (:causation-path @child-event)))
     (bus/close bus)))
 
-
 (deftest transact-success-test
   (let [bus (make-test-bus :tx-store (make-tx-store))
         called (atom 0)]
@@ -424,87 +424,86 @@
 
 (deftest transact-success-sqlite-test
   (run-with-timeout! 120000
-    (fn []
-      (let [bus (make-test-bus :tx-store (make-tx-store :sqlite)
-                               :logger (sqlite-logger))
-            called (atom 0)]
-        (bus/subscribe bus :test/event (fn [_ _] (swap! called inc) true))
-        (let [{:keys [result-promise result-chan]}
-              (bus/transact bus [{:event-type :test/event
-                                  :payload {:data 1}
-                                  :module :test/tx}])
-              result (deref result-promise 2000 ::timeout)
-              chan-result (async/<!! result-chan)]
-          (is (not= result ::timeout))
-          (is (:ok? result))
-          (is (:ok? chan-result))
-          (is (= 1 @called)))
-        (bus/close bus)))))
+                     (fn []
+                       (let [bus (make-test-bus :tx-store (make-tx-store :sqlite)
+                                                :logger (sqlite-logger))
+                             called (atom 0)]
+                         (bus/subscribe bus :test/event (fn [_ _] (swap! called inc) true))
+                         (let [{:keys [result-promise result-chan]}
+                               (bus/transact bus [{:event-type :test/event
+                                                   :payload {:data 1}
+                                                   :module :test/tx}])
+                               result (deref result-promise 2000 ::timeout)
+                               chan-result (async/<!! result-chan)]
+                           (is (not= result ::timeout))
+                           (is (:ok? result))
+                           (is (:ok? chan-result))
+                           (is (= 1 @called)))
+                         (bus/close bus)))))
 
 (deftest transact-handler-failure-sqlite-test
   (run-with-timeout! 120000
-    (fn []
-      (let [bus (make-test-bus :tx-store (make-tx-store :sqlite)
-                               :handler-max-retries 1
-                               :logger (sqlite-logger))
-            called (atom 0)]
-        (bus/subscribe bus :test/event (fn [_ _] (swap! called inc) false))
-        (let [{:keys [result-promise]}
-              (bus/transact bus [{:event-type :test/event
-                                  :payload {:data 1}
-                                  :module :test/tx}])
-              result (deref result-promise 2000 ::timeout)]
-          (is (not= result ::timeout))
-          (is (false? (:ok? result)))
-          (is (= 1 @called)))
-        (bus/close bus)))))
+                     (fn []
+                       (let [bus (make-test-bus :tx-store (make-tx-store :sqlite)
+                                                :handler-max-retries 1
+                                                :logger (sqlite-logger))
+                             called (atom 0)]
+                         (bus/subscribe bus :test/event (fn [_ _] (swap! called inc) false))
+                         (let [{:keys [result-promise]}
+                               (bus/transact bus [{:event-type :test/event
+                                                   :payload {:data 1}
+                                                   :module :test/tx}])
+                               result (deref result-promise 2000 ::timeout)]
+                           (is (not= result ::timeout))
+                           (is (false? (:ok? result)))
+                           (is (= 1 @called)))
+                         (bus/close bus)))))
 
 (deftest transact-timeout-sqlite-test
   (run-with-timeout! 120000
-    (fn []
-      (let [bus (make-test-bus :tx-store (make-tx-store :sqlite)
-                               :tx-handler-timeout 10
-                               :handler-max-retries 1
-                               :logger (sqlite-logger))
-            called (atom 0)]
-        (bus/subscribe bus :test/event
-                       (fn [_ _]
-                         (swap! called inc)
-                         (Thread/sleep 50)
-                         true))
-        (let [{:keys [result-promise]} (bus/transact bus
-                                                     [{:event-type :test/event
-                                                       :payload {:data 1}
-                                                       :module :test/tx}])
-              result (deref result-promise 2000 ::timeout)]
-          (is (not= result ::timeout))
-          (is (false? (:ok? result)))
-          (is (= 1 @called)))
-        (bus/close bus)))))
+                     (fn []
+                       (let [bus (make-test-bus :tx-store (make-tx-store :sqlite)
+                                                :tx-handler-timeout 10
+                                                :handler-max-retries 1
+                                                :logger (sqlite-logger))
+                             called (atom 0)]
+                         (bus/subscribe bus :test/event
+                                        (fn [_ _]
+                                          (swap! called inc)
+                                          (Thread/sleep 50)
+                                          true))
+                         (let [{:keys [result-promise]} (bus/transact bus
+                                                                      [{:event-type :test/event
+                                                                        :payload {:data 1}
+                                                                        :module :test/tx}])
+                               result (deref result-promise 2000 ::timeout)]
+                           (is (not= result ::timeout))
+                           (is (false? (:ok? result)))
+                           (is (= 1 @called)))
+                         (bus/close bus)))))
 
 (deftest transact-retry-success-sqlite-test
   (run-with-timeout! 120000
-    (fn []
-      (let [bus (make-test-bus :tx-store (make-tx-store :sqlite)
-                               :handler-max-retries 2
-                               :handler-backoff-ms 10
-                               :logger (sqlite-logger))
-            called (atom 0)]
-        (bus/subscribe bus :test/event
-                       (fn [_ _]
-                         (let [n (swap! called inc)]
-                           (if (= n 1) false true))))
-        (let [{:keys [result-promise]} (bus/transact bus
-                                                     [{:event-type :test/event
-                                                       :payload {:data 1}
-                                                       :module :test/tx}])
-              result (deref result-promise 3000 ::timeout)]
-          (is (not= result ::timeout))
-          (is (:ok? result))
-          (is (= 2 @called)))
-        (bus/close bus)))))
+                     (fn []
+                       (let [bus (make-test-bus :tx-store (make-tx-store :sqlite)
+                                                :handler-max-retries 2
+                                                :handler-backoff-ms 10
+                                                :logger (sqlite-logger))
+                             called (atom 0)]
+                         (bus/subscribe bus :test/event
+                                        (fn [_ _]
+                                          (let [n (swap! called inc)]
+                                            (if (= n 1) false true))))
+                         (let [{:keys [result-promise]} (bus/transact bus
+                                                                      [{:event-type :test/event
+                                                                        :payload {:data 1}
+                                                                        :module :test/tx}])
+                               result (deref result-promise 3000 ::timeout)]
+                           (is (not= result ::timeout))
+                           (is (:ok? result))
+                           (is (= 2 @called)))
+                         (bus/close bus)))))
 
 (comment
   (require '[kaocha.repl :as k])
-  (k/run *ns*)
-  )
+  (k/run *ns*))

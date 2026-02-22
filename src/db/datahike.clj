@@ -89,7 +89,7 @@
   (transact! [store tx-data]
     (d/transact (:conn store) tx-data))
 
-  (build-tx-data [store tx-id now events listeners]
+  (build-tx-data [_store tx-id now events listeners]
     (let [tx-eid (d/tempid :db.part/user)
           base-tx {:db/id tx-eid
                    :tx/id tx-id
@@ -97,58 +97,58 @@
                    :tx/created-at now
                    :tx/updated-at now}]
       (reduce
-        (fn [{:keys [tx-data handler-count]} {:keys [event-type payload module schema-version]}]
-          (let [schema-version (or schema-version "1.0")
-                msg-eid (d/tempid :db.part/user)
-                msg-id (UUID/randomUUID)
-                message-id (UUID/randomUUID)
-                msg {:db/id msg-eid
-                     :msg/id msg-id
-                     :msg/tx tx-eid
-                     :msg/event-type event-type
-                     :msg/payload (pr-str payload)
-                     :msg/module module
-                     :msg/schema-version schema-version
-                     :msg/correlation-id tx-id
-                     :msg/message-id message-id}
-                handlers (get listeners event-type [])
-                handler-entities (mapv (fn [{:keys [id]}]
-                                         {:db/id (d/tempid :db.part/user)
-                                          :h/id (UUID/randomUUID)
-                                          :h/msg msg-eid
-                                          :h/handler-id id
-                                          :h/status :pending
-                                          :h/retry-count 0
-                                          :h/updated-at now
-                                          :h/next-at now})
-                                       handlers)]
-            {:tx-data (into tx-data (cons msg handler-entities))
-             :handler-count (+ handler-count (count handler-entities))}))
-        {:tx-data [base-tx]
-         :handler-count 0}
-        events)))
+       (fn [{:keys [tx-data handler-count]} {:keys [event-type payload module schema-version]}]
+         (let [schema-version (or schema-version "1.0")
+               msg-eid (d/tempid :db.part/user)
+               msg-id (UUID/randomUUID)
+               message-id (UUID/randomUUID)
+               msg {:db/id msg-eid
+                    :msg/id msg-id
+                    :msg/tx tx-eid
+                    :msg/event-type event-type
+                    :msg/payload (pr-str payload)
+                    :msg/module module
+                    :msg/schema-version schema-version
+                    :msg/correlation-id tx-id
+                    :msg/message-id message-id}
+               handlers (get listeners event-type [])
+               handler-entities (mapv (fn [{:keys [id]}]
+                                        {:db/id (d/tempid :db.part/user)
+                                         :h/id (UUID/randomUUID)
+                                         :h/msg msg-eid
+                                         :h/handler-id id
+                                         :h/status :pending
+                                         :h/retry-count 0
+                                         :h/updated-at now
+                                         :h/next-at now})
+                                      handlers)]
+           {:tx-data (into tx-data (cons msg handler-entities))
+            :handler-count (+ handler-count (count handler-entities))}))
+       {:tx-data [base-tx]
+        :handler-count 0}
+       events)))
 
   (query-pending-handlers [store now]
     (let [db (d/db (:conn store))]
       (d/q '[:find ?h ?msg ?tx-id ?event-type ?payload ?module ?schema-version
-                     ?correlation-id ?message-id ?handler-id ?retry-count
-              :in $ ?now
-              :where
-              [?h :h/status :pending]
-              [?h :h/next-at ?next-at]
-              [(<= ?next-at ?now)]
-              [?h :h/msg ?msg]
-              [?h :h/handler-id ?handler-id]
-              [?h :h/retry-count ?retry-count]
-              [?msg :msg/tx ?tx]
-              [?tx :tx/id ?tx-id]
-              [?msg :msg/event-type ?event-type]
-              [?msg :msg/payload ?payload]
-              [?msg :msg/module ?module]
-              [?msg :msg/schema-version ?schema-version]
-              [?msg :msg/correlation-id ?correlation-id]
-              [?msg :msg/message-id ?message-id]]
-            db now)))
+             ?correlation-id ?message-id ?handler-id ?retry-count
+             :in $ ?now
+             :where
+             [?h :h/status :pending]
+             [?h :h/next-at ?next-at]
+             [(<= ?next-at ?now)]
+             [?h :h/msg ?msg]
+             [?h :h/handler-id ?handler-id]
+             [?h :h/retry-count ?retry-count]
+             [?msg :msg/tx ?tx]
+             [?tx :tx/id ?tx-id]
+             [?msg :msg/event-type ?event-type]
+             [?msg :msg/payload ?payload]
+             [?msg :msg/module ?module]
+             [?msg :msg/schema-version ?schema-version]
+             [?msg :msg/correlation-id ?correlation-id]
+             [?msg :msg/message-id ?message-id]]
+           db now)))
 
   (update-handler! [store update]
     (let [entity {:db/id (:handler-row-id update)

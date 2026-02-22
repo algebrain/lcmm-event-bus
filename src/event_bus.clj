@@ -46,10 +46,10 @@
                                  [(:module parent-envelope) (:message-type parent-envelope)])]
     (when (some #(= % [module new-event-type]) new-causation-path)
       (throw (IllegalStateException.
-               (str "Cycle detected: event " new-event-type " already in causation path for module " module "."))))
+              (str "Cycle detected: event " new-event-type " already in causation path for module " module "."))))
     (when (and max-depth (> (count new-causation-path) max-depth))
       (throw (IllegalStateException.
-               (str "Max depth exceeded: " (count new-causation-path) " > " max-depth))))
+              (str "Max depth exceeded: " (count new-causation-path) " > " max-depth))))
     (assoc (make-envelope new-event-type new-payload
                           {:correlation-id (:correlation-id parent-envelope)
                            :module module})
@@ -88,7 +88,7 @@
       (complete-tx! bus tx-id (= status :ok) (when (= status :failed) :handler-failed)))))
 
 (defn- process-handler! [bus row]
-  (let [[h-eid msg-eid tx-eid event-type payload module schema-version
+  (let [[h-eid _msg-eid _tx-eid event-type payload module schema-version
          correlation-id message-id handler-id retry-count] row
         listeners @(:listeners bus)
         handler-entry (find-handler-by-id listeners event-type handler-id)
@@ -188,7 +188,6 @@
                           (fn [] (tx-worker-loop bus stop-flag)))]
       (reset! (:tx-worker bus) worker))))
 
-
 ;; ============================
 ;; Bus Constructor
 ;; ============================
@@ -223,21 +222,21 @@
                 queue (ArrayBlockingQueue. buffer-size)
                 executor (Executors/newVirtualThreadPerTaskExecutor)
                 consumers (doall
-                            (repeatedly concurrency
-                                        #(.submit ^ExecutorService executor
-                                                  ^Runnable
-                                                  (fn []
-                                                    (loop []
-                                                      (if (.isShutdown executor)
-                                                        nil
-                                                        (let [result (try
-                                                                       (let [task (.take queue)]
-                                                                         (when task (task)))
-                                                                       ::ok
-                                                                       (catch InterruptedException _
-                                                                         ::stop))]
-                                                          (when (= result ::ok)
-                                                            (recur)))))))))]
+                           (repeatedly concurrency
+                                       #(.submit ^ExecutorService executor
+                                                 ^Runnable
+                                                 (fn []
+                                                   (loop []
+                                                     (if (.isShutdown executor)
+                                                       nil
+                                                       (let [result (try
+                                                                      (let [task (.take queue)]
+                                                                        (when task (task)))
+                                                                      ::ok
+                                                                      (catch InterruptedException _
+                                                                        ::stop))]
+                                                         (when (= result ::ok)
+                                                           (recur)))))))))]
             (assoc bus-map
                    :executor executor
                    :queue queue
@@ -311,8 +310,8 @@
         parent-envelope (:parent-envelope opts)
         envelope (if parent-envelope
                    (derive-envelope parent-envelope event-type payload (merge (:opts bus)
-                                                                            {:module module
-                                                                             :schema-version schema-version}))
+                                                                              {:module module
+                                                                               :schema-version schema-version}))
                    (make-envelope event-type payload (merge (:opts bus)
                                                             {:module module
                                                              :schema-version schema-version})))
@@ -326,7 +325,7 @@
                         :schema-version schema-version
                         :correlation-id (:correlation-id envelope)})
       (throw (IllegalStateException.
-               (str "Missing schema for event " event-type " version " schema-version))))
+              (str "Missing schema for event " event-type " version " schema-version))))
     (when-not (m/validate publish-schema payload)
       (log! bus :error {:event :publish-schema-validation-failed
                         :event-type event-type
@@ -335,7 +334,7 @@
                         :payload payload
                         :errors (me/humanize (m/explain publish-schema payload))})
       (throw (IllegalStateException.
-               (str "Publish schema validation failed for event " event-type " version " schema-version))))
+              (str "Publish schema validation failed for event " event-type " version " schema-version))))
     (log! bus :info {:event :event-published
                      :correlation-id (:correlation-id envelope)
                      :envelope envelope})
@@ -389,7 +388,7 @@
                               :schema-version schema-version
                               :correlation-id tx-id})
             (throw (IllegalStateException.
-                     (str "Missing schema for event " event-type " version " schema-version))))
+                    (str "Missing schema for event " event-type " version " schema-version))))
           (when-not (m/validate publish-schema payload)
             (log! bus :error {:event :publish-schema-validation-failed
                               :event-type event-type
@@ -398,7 +397,7 @@
                               :payload payload
                               :errors (me/humanize (m/explain publish-schema payload))})
             (throw (IllegalStateException.
-                     (str "Publish schema validation failed for event " event-type " version " schema-version))))))
+                    (str "Publish schema validation failed for event " event-type " version " schema-version))))))
       (let [{:keys [tx-data handler-count]}
             (tx-store/build-tx-data (:tx-store bus) tx-id now events listeners)]
         (tx-store/transact! (:tx-store bus) tx-data)

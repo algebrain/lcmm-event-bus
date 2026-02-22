@@ -20,7 +20,7 @@
                 (require 'db.sqlite)
                 ((resolve 'db.sqlite/make-store) tx-store))
       (throw (IllegalArgumentException.
-               (str "Unsupported :db/type in :tx-store: " db-type))))))
+              (str "Unsupported :db/type in :tx-store: " db-type))))))
 
 (defn init-store
   [tx-store]

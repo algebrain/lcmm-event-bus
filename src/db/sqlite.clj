@@ -1,7 +1,7 @@
 (ns db.sqlite
   (:require [clojure.edn :as edn]
             [db.tx-store :as tx-store])
-  (:import [java.sql DriverManager PreparedStatement ResultSet]
+  (:import [java.sql DriverManager]
            [java.util UUID]
            [java.util.concurrent.locks ReentrantLock]))
 
@@ -65,7 +65,7 @@
     (instance? java.util.Date value) (.getTime ^java.util.Date value)
     (number? value) (long value)
     :else (throw (IllegalArgumentException.
-                   (str "Unsupported time value: " (pr-str value))))))
+                  (str "Unsupported time value: " (pr-str value))))))
 
 (defn- pragma-value [v]
   (cond
@@ -78,7 +78,7 @@
   [^java.sql.Connection conn pragma]
   (doseq [[k v] pragma]
     (with-open [stmt (.createStatement conn)]
-      (.execute stmt (str "PRAGMA " (name k) "=" (pragma-value v)))))) 
+      (.execute stmt (str "PRAGMA " (name k) "=" (pragma-value v))))))
 
 (defn- create-schema!
   [^java.sql.Connection conn]
@@ -113,7 +113,7 @@
           pragma (merge default-pragma (:pragma config))]
       (when-not (#{:edn :value} payload-format)
         (throw (IllegalArgumentException.
-                 (str "Unsupported :payload-format in :sqlite/config: " payload-format))))
+                (str "Unsupported :payload-format in :sqlite/config: " payload-format))))
       (->SQLiteStore jdbc-url nil (ReentrantLock.) payload-format pragma))))
 
 (extend-type SQLiteStore
@@ -134,14 +134,14 @@
           (.setAutoCommit conn false)
           (try
             (with-open [tx-stmt (.prepareStatement conn
-                                                  "INSERT INTO tx (tx_id, status, created_at, updated_at) VALUES (?,?,?,?)")]
+                                                   "INSERT INTO tx (tx_id, status, created_at, updated_at) VALUES (?,?,?,?)")]
               (.setString tx-stmt 1 (uuid->str (:tx/id tx)))
               (.setString tx-stmt 2 (name (:tx/status tx)))
               (.setLong tx-stmt 3 (:tx/created-at tx))
               (.setLong tx-stmt 4 (:tx/updated-at tx))
               (.executeUpdate tx-stmt))
             (with-open [msg-stmt (.prepareStatement conn
-                                                   "INSERT INTO msg (msg_id, tx_id, event_type, payload, module, schema_version, correlation_id, message_id) VALUES (?,?,?,?,?,?,?,?)")]
+                                                    "INSERT INTO msg (msg_id, tx_id, event_type, payload, module, schema_version, correlation_id, message_id) VALUES (?,?,?,?,?,?,?,?)")]
               (doseq [m msgs]
                 (.setString msg-stmt 1 (uuid->str (:msg/id m)))
                 (.setString msg-stmt 2 (uuid->str (:msg/tx-id m)))
@@ -154,7 +154,7 @@
                 (.addBatch msg-stmt))
               (.executeBatch msg-stmt))
             (with-open [h-stmt (.prepareStatement conn
-                                                 "INSERT INTO handler (h_id, msg_id, handler_id, status, retry_count, last_error, updated_at, next_at) VALUES (?,?,?,?,?,?,?,?)")]
+                                                  "INSERT INTO handler (h_id, msg_id, handler_id, status, retry_count, last_error, updated_at, next_at) VALUES (?,?,?,?,?,?,?,?)")]
               (doseq [h handlers]
                 (.setString h-stmt 1 (uuid->str (:h/id h)))
                 (.setString h-stmt 2 (uuid->str (:h/msg-id h)))
@@ -182,36 +182,36 @@
               :tx/created-at now-ms
               :tx/updated-at now-ms}]
       (reduce
-        (fn [{:keys [tx-data handler-count]} {:keys [event-type payload module schema-version]}]
-          (let [schema-version (or schema-version "1.0")
-                msg-id (UUID/randomUUID)
-                message-id (UUID/randomUUID)
-                msg {:msg/id msg-id
-                     :msg/tx-id tx-id
-                     :msg/event-type (kw->str event-type)
-                     :msg/payload (encode-payload store payload)
-                     :msg/module (kw->str module)
-                     :msg/schema-version schema-version
-                     :msg/correlation-id tx-id
-                     :msg/message-id message-id}
-                handlers (get listeners event-type [])
-                handler-entities (mapv (fn [{:keys [id]}]
-                                         {:h/id (UUID/randomUUID)
-                                          :h/msg-id msg-id
-                                          :h/handler-id id
-                                          :h/status :pending
-                                          :h/retry-count 0
-                                          :h/updated-at now-ms
-                                          :h/next-at now-ms
-                                          :h/last-error nil})
-                                       handlers)]
-            {:tx-data (-> tx-data
-                          (update :msgs conj msg)
-                          (update :handlers into handler-entities))
-             :handler-count (+ handler-count (count handler-entities))}))
-        {:tx-data {:tx tx :msgs [] :handlers []}
-         :handler-count 0}
-        events)))
+       (fn [{:keys [tx-data handler-count]} {:keys [event-type payload module schema-version]}]
+         (let [schema-version (or schema-version "1.0")
+               msg-id (UUID/randomUUID)
+               message-id (UUID/randomUUID)
+               msg {:msg/id msg-id
+                    :msg/tx-id tx-id
+                    :msg/event-type (kw->str event-type)
+                    :msg/payload (encode-payload store payload)
+                    :msg/module (kw->str module)
+                    :msg/schema-version schema-version
+                    :msg/correlation-id tx-id
+                    :msg/message-id message-id}
+               handlers (get listeners event-type [])
+               handler-entities (mapv (fn [{:keys [id]}]
+                                        {:h/id (UUID/randomUUID)
+                                         :h/msg-id msg-id
+                                         :h/handler-id id
+                                         :h/status :pending
+                                         :h/retry-count 0
+                                         :h/updated-at now-ms
+                                         :h/next-at now-ms
+                                         :h/last-error nil})
+                                      handlers)]
+           {:tx-data (-> tx-data
+                         (update :msgs conj msg)
+                         (update :handlers into handler-entities))
+            :handler-count (+ handler-count (count handler-entities))}))
+       {:tx-data {:tx tx :msgs [] :handlers []}
+        :handler-count 0}
+       events)))
 
   (query-pending-handlers [store now]
     (let [conn (:conn store)
