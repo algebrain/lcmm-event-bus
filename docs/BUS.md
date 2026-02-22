@@ -49,6 +49,8 @@
 - `:tx-handler-timeout`: Таймаут обработчика в `transact` (мс, по умолчанию: `10000`).
 - `:handler-max-retries`: Количество ретраев обработчика в `transact` (по умолчанию: `3`).
 - `:handler-backoff-ms`: Задержка между ретраями (мс, по умолчанию: `1000`).
+- `:tx-retention-ms`: Срок хранения успешных транзакций `transact` (мс, по умолчанию: `7 дней`).
+- `:tx-cleanup-interval-ms`: Периодичность фоновой очистки (мс, по умолчанию: `1 час`).
 
 Параметры `:tx-store`, `:tx-handler-timeout`, `:handler-max-retries`, `:handler-backoff-ms` используются только если включен `transact`.
 

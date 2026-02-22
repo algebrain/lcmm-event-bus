@@ -62,6 +62,12 @@
 (defn- now-inst []
   (java.util.Date.))
 
+(def ^:private default-tx-retention-ms
+  (* 7 24 60 60 1000))
+
+(def ^:private default-tx-cleanup-interval-ms
+  (* 60 60 1000))
+
 (defn- ensure-tx-store! [bus]
   (when-not (:tx-store bus)
     (throw (IllegalStateException. "transact requires :tx-store in make-bus options."))))
@@ -173,6 +179,23 @@
     (when-not @stop-flag
       (try
         (process-pending-handlers! bus)
+        (when-let [store (:tx-store bus)]
+          (let [interval-ms (-> bus :opts :tx-cleanup-interval-ms)
+                retention-ms (-> bus :opts :tx-retention-ms)
+                last-cleanup-ms @(:tx-cleanup-last bus)
+                now-ms (System/currentTimeMillis)]
+            (when (and interval-ms retention-ms
+                       (>= (- now-ms last-cleanup-ms) interval-ms))
+              (reset! (:tx-cleanup-last bus) now-ms)
+              (try
+                (let [deleted (tx-store/cleanup! store (java.util.Date. now-ms) retention-ms)]
+                  (log! bus :info {:event :tx-cleanup
+                                   :deleted deleted
+                                   :retention-ms retention-ms
+                                   :cleanup-interval-ms interval-ms}))
+                (catch Throwable e
+                  (log! bus :error {:event :tx-cleanup-failed
+                                    :exception e}))))))
         (catch Throwable e
           (log! bus :error {:event :tx-worker-failed
                             :exception e})))
@@ -199,6 +222,8 @@
    :mode - :unlimited (default) or :buffered.
    :max-depth - Max event chain depth (default: 20).
    :logger - A function `(fn [level data])` for observability.
+   :tx-retention-ms - Retention for successful transact records (default: 7 days).
+   :tx-cleanup-interval-ms - Cleanup interval for successful transact records (default: 1 hour).
    
    Options for :buffered mode:
    :buffer-size - Queue size (default: 1024).
@@ -208,9 +233,15 @@
       :as   opts}]
   (when (nil? (:schema-registry opts))
     (throw (IllegalArgumentException. "Missing required :schema-registry in make-bus options.")))
-  (let [bus-map {:listeners (atom {})
+  (let [base-opts (merge {:mode mode :max-depth max-depth} opts)
+        final-opts (if (:tx-store base-opts)
+                     (merge {:tx-retention-ms default-tx-retention-ms
+                             :tx-cleanup-interval-ms default-tx-cleanup-interval-ms}
+                            base-opts)
+                     base-opts)
+        bus-map {:listeners (atom {})
                  :closed?   (atom false)
-                 :opts      (merge {:mode mode :max-depth max-depth} opts)}
+                 :opts      final-opts}
         bus-with-executor
         (case mode
           :unlimited
@@ -241,13 +272,14 @@
                    :executor executor
                    :queue queue
                    :consumers consumers)))]
-    (if-let [tx-store (:tx-store opts)]
+    (if-let [tx-store (:tx-store final-opts)]
       (let [store (tx-store/init-store tx-store)
             bus (assoc bus-with-executor
                        :tx-store store
                        :tx-results (atom {})
                        :tx-worker (atom nil)
                        :tx-stop (atom false)
+                       :tx-cleanup-last (atom (System/currentTimeMillis))
                        :tx-executor (Executors/newVirtualThreadPerTaskExecutor))]
         (start-tx-worker! bus)
         bus)

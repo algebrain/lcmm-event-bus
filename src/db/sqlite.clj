@@ -300,4 +300,18 @@
           (.setString stmt 3 (uuid->str tx-id))
           (.executeUpdate stmt))
         (finally
+          (.unlock lock)))))
+
+  (cleanup! [store now retention-ok-ms]
+    (let [conn (:conn store)
+          lock ^ReentrantLock (:lock store)
+          cutoff-ms (- (now->millis now) (long retention-ok-ms))
+          sql "DELETE FROM tx WHERE status = ? AND updated_at < ?"]
+      (.lock lock)
+      (try
+        (with-open [stmt (.prepareStatement conn sql)]
+          (.setString stmt 1 "ok")
+          (.setLong stmt 2 cutoff-ms)
+          (.executeUpdate stmt))
+        (finally
           (.unlock lock))))))

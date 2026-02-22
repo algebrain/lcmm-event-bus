@@ -7,7 +7,8 @@
   (query-pending-handlers [store now])
   (update-handler! [store update])
   (tx-status [store tx-id])
-  (update-tx! [store tx-id status now]))
+  (update-tx! [store tx-id status now])
+  (cleanup! [store now retention-ok-ms]))
 
 (defn make-store
   [tx-store]

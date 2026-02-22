@@ -181,4 +181,46 @@
     (d/transact (:conn store)
                 [{:tx/id tx-id
                   :tx/status status
-                  :tx/updated-at now}])))
+                  :tx/updated-at now}]))
+
+  (cleanup! [store now retention-ok-ms]
+    (let [cutoff (java.util.Date. (- (.getTime ^java.util.Date now) (long retention-ok-ms)))
+          db (d/db (:conn store))
+          tx-eids (mapv first
+                        (d/q '[:find ?tx
+                               :in $ ?cutoff
+                               :where
+                               [?tx :tx/status :ok]
+                               [?tx :tx/updated-at ?updated]
+                               [(< ?updated ?cutoff)]]
+                             db cutoff))]
+      (if (empty? tx-eids)
+        0
+        (let [tx-set (set tx-eids)
+              msg-eids (if (seq tx-eids)
+                         (mapv first
+                               (d/q '[:find ?msg
+                                      :in $ ?tx-set
+                                      :where
+                                      [?msg :msg/tx ?tx]
+                                      [(contains? ?tx-set ?tx)]]
+                                    db tx-set))
+                         [])
+              msg-set (set msg-eids)
+              handler-eids (if (seq msg-eids)
+                             (mapv first
+                                   (d/q '[:find ?h
+                                          :in $ ?msg-set
+                                          :where
+                                          [?h :h/msg ?msg]
+                                          [(contains? ?msg-set ?msg)]]
+                                        db msg-set))
+                             [])
+              retracts (into []
+                             (concat
+                              (mapv (fn [eid] [:db.fn/retractEntity eid]) handler-eids)
+                              (mapv (fn [eid] [:db.fn/retractEntity eid]) msg-eids)
+                              (mapv (fn [eid] [:db.fn/retractEntity eid]) tx-eids)))]
+          (when (seq retracts)
+            (d/transact (:conn store) retracts))
+          (count tx-eids))))))

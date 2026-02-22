@@ -5,6 +5,7 @@
             [event-bus :as bus]
             [malli.core :as m])
   (:import [java.io File]
+           [java.sql DriverManager]
            [java.util UUID]
            [java.util.concurrent CountDownLatch TimeUnit]))
 
@@ -63,6 +64,22 @@
   (let [result (deref (future (f)) timeout-ms ::timeout)]
     (when (= result ::timeout)
       (is false (str "SQLite test timed out after " timeout-ms " ms")))))
+
+(defn- wait-until
+  [timeout-ms pred]
+  (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+    (loop []
+      (cond
+        (pred) true
+        (< (System/currentTimeMillis) deadline) (do (Thread/sleep 20) (recur))
+        :else false))))
+
+(defn- sqlite-count
+  [jdbc-url table-name]
+  (with-open [conn (DriverManager/getConnection jdbc-url)
+              stmt (.prepareStatement conn (str "SELECT COUNT(*) FROM " table-name))
+              rs (.executeQuery stmt)]
+    (if (.next rs) (.getLong rs 1) 0)))
 
 (defn- sqlite-logger []
   (fn [_level data]
@@ -354,73 +371,93 @@
     (bus/close bus)))
 
 (deftest transact-success-test
-  (let [bus (make-test-bus :tx-store (make-tx-store))
-        called (atom 0)]
-    (bus/subscribe bus :test/event (fn [_ _] (swap! called inc) true))
-    (let [{:keys [result-promise result-chan]}
-          (bus/transact bus [{:event-type :test/event
-                              :payload {:data 1}
-                              :module :test/tx}])
-          result (deref result-promise 2000 ::timeout)
-          chan-result (async/<!! result-chan)]
-      (is (not= result ::timeout))
-      (is (:ok? result))
-      (is (:ok? chan-result))
-      (is (= 1 @called)))
-    (bus/close bus)))
+  (run-with-timeout! 120000
+                     (fn []
+                       (let [bus (make-test-bus :tx-store (make-tx-store))
+                             called (atom 0)]
+                         (bus/subscribe bus :test/event (fn [_ _] (swap! called inc) true))
+                         (let [{:keys [result-promise result-chan]}
+                               (bus/transact bus [{:event-type :test/event
+                                                   :payload {:data 1}
+                                                   :module :test/tx}])
+                               result (deref result-promise 2000 ::timeout)
+                               chan-result (async/<!! result-chan)]
+                           (is (not= result ::timeout))
+                           (is (:ok? result))
+                           (is (:ok? chan-result))
+                           (is (= 1 @called)))
+                         (bus/close bus)))))
 
 (deftest transact-handler-failure-test
-  (let [bus (make-test-bus :tx-store (make-tx-store) :handler-max-retries 1)
-        called (atom 0)]
-    (bus/subscribe bus :test/event (fn [_ _] (swap! called inc) false))
-    (let [{:keys [result-promise]}
-          (bus/transact bus [{:event-type :test/event
-                              :payload {:data 1}
-                              :module :test/tx}])
-          result (deref result-promise 2000 ::timeout)]
-      (is (not= result ::timeout))
-      (is (false? (:ok? result)))
-      (is (= 1 @called)))
-    (bus/close bus)))
+  (run-with-timeout! 120000
+                     (fn []
+                       (let [bus (make-test-bus :tx-store (make-tx-store) :handler-max-retries 1)
+                             called (atom 0)]
+                         (bus/subscribe bus :test/event (fn [_ _] (swap! called inc) false))
+                         (let [{:keys [result-promise]}
+                               (bus/transact bus [{:event-type :test/event
+                                                   :payload {:data 1}
+                                                   :module :test/tx}])
+                               result (deref result-promise 2000 ::timeout)]
+                           (is (not= result ::timeout))
+                           (is (false? (:ok? result)))
+                           (is (= 1 @called)))
+                         (bus/close bus)))))
 
 (deftest transact-timeout-test
-  (let [bus (make-test-bus :tx-store (make-tx-store)
-                           :tx-handler-timeout 10
-                           :handler-max-retries 1)
-        called (atom 0)]
-    (bus/subscribe bus :test/event
-                   (fn [_ _]
-                     (swap! called inc)
-                     (Thread/sleep 50)
-                     true))
-    (let [{:keys [result-promise]} (bus/transact bus
-                                                 [{:event-type :test/event
-                                                   :payload {:data 1}
-                                                   :module :test/tx}])
-          result (deref result-promise 2000 ::timeout)]
-      (is (not= result ::timeout))
-      (is (false? (:ok? result)))
-      (is (= 1 @called)))
-    (bus/close bus)))
+  (run-with-timeout! 120000
+                     (fn []
+                       (let [bus (make-test-bus :tx-store (make-tx-store)
+                                                :tx-handler-timeout 10
+                                                :handler-max-retries 1)
+                             called (atom 0)]
+                         (bus/subscribe bus :test/event
+                                        (fn [_ _]
+                                          (swap! called inc)
+                                          (Thread/sleep 50)
+                                          true))
+                         (let [tx-result (deref (future
+                                                  (bus/transact bus
+                                                                [{:event-type :test/event
+                                                                  :payload {:data 1}
+                                                                  :module :test/tx}]))
+                                                2000
+                                                ::timeout)]
+                           (is (not= tx-result ::timeout))
+                           (when (not= tx-result ::timeout)
+                             (let [{:keys [result-promise]} tx-result
+                                   result (deref result-promise 2000 ::timeout)]
+                               (is (not= result ::timeout))
+                               (is (false? (:ok? result)))
+                               (is (= 1 @called)))))
+                         (bus/close bus)))))
 
 (deftest transact-retry-success-test
-  (let [bus (make-test-bus :tx-store (make-tx-store)
-                           :handler-max-retries 2
-                           :handler-backoff-ms 10)
-        called (atom 0)]
-    (bus/subscribe bus :test/event
-                   (fn [_ _]
-                     (let [n (swap! called inc)]
-                       (if (= n 1) false true))))
-    (let [{:keys [result-promise]} (bus/transact bus
-                                                 [{:event-type :test/event
-                                                   :payload {:data 1}
-                                                   :module :test/tx}])
-          result (deref result-promise 3000 ::timeout)]
-      (is (not= result ::timeout))
-      (is (:ok? result))
-      (is (= 2 @called)))
-    (bus/close bus)))
+  (run-with-timeout! 120000
+                     (fn []
+                       (let [bus (make-test-bus :tx-store (make-tx-store)
+                                                :handler-max-retries 2
+                                                :handler-backoff-ms 10)
+                             called (atom 0)]
+                         (bus/subscribe bus :test/event
+                                        (fn [_ _]
+                                          (let [n (swap! called inc)]
+                                            (if (= n 1) false true))))
+                         (let [tx-result (deref (future
+                                                  (bus/transact bus
+                                                                [{:event-type :test/event
+                                                                  :payload {:data 1}
+                                                                  :module :test/tx}]))
+                                                2000
+                                                ::timeout)]
+                           (is (not= tx-result ::timeout))
+                           (when (not= tx-result ::timeout)
+                             (let [{:keys [result-promise]} tx-result
+                                   result (deref result-promise 3000 ::timeout)]
+                               (is (not= result ::timeout))
+                               (is (:ok? result))
+                               (is (= 2 @called)))))
+                         (bus/close bus)))))
 
 (deftest transact-success-sqlite-test
   (run-with-timeout! 120000
@@ -502,6 +539,30 @@
                            (is (not= result ::timeout))
                            (is (:ok? result))
                            (is (= 2 @called)))
+                         (bus/close bus)))))
+
+(deftest transact-cleanup-sqlite-test
+  (run-with-timeout! 120000
+                     (fn []
+                       (let [tx-store (make-tx-store :sqlite)
+                             jdbc-url (get-in tx-store [:sqlite/config :jdbc-url])
+                             bus (make-test-bus :tx-store tx-store
+                                                :tx-retention-ms 10
+                                                :tx-cleanup-interval-ms 50
+                                                :logger (sqlite-logger))
+                             called (atom 0)]
+                         (bus/subscribe bus :test/event (fn [_ _] (swap! called inc) true))
+                         (let [{:keys [result-promise]}
+                               (bus/transact bus [{:event-type :test/event
+                                                   :payload {:data 1}
+                                                   :module :test/tx}])
+                               result (deref result-promise 2000 ::timeout)]
+                           (is (not= result ::timeout))
+                           (is (:ok? result))
+                           (is (= 1 @called)))
+                         (is (wait-until 2000 #(zero? (sqlite-count jdbc-url "tx"))))
+                         (is (= 0 (sqlite-count jdbc-url "msg")))
+                         (is (= 0 (sqlite-count jdbc-url "handler")))
                          (bus/close bus)))))
 
 (comment
