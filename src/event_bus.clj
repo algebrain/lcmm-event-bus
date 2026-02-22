@@ -1,6 +1,7 @@
 (ns event-bus
   (:require [clojure.core.async :as async]
             [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [db.tx-store :as tx-store]
             [malli.core :as m]
             [malli.error :as me])
@@ -16,9 +17,50 @@
   [bus level data]
   (when-let [logger (-> bus :opts :logger)]
     (try
-      (let [component (or (-> bus :opts :component) :event-bus)
-            payload (merge {:component component} data)]
-        (logger level payload))
+      (let [opts (:opts bus)
+            component (or (:component opts) :event-bus)
+            payload (:payload data)
+            payload-size (when (contains? data :payload)
+                           (count (.getBytes ^String (pr-str payload) "UTF-8")))
+            safe-payload (let [mode (or (:log-payload opts) :none)
+                               max-chars (or (:log-payload-max-chars opts) 1024)]
+                           (case mode
+                             :none nil
+                             :keys (if (map? payload) (vec (keys payload)) :non-map)
+                             :truncated (let [s (pr-str payload)]
+                                          (if (> (count s) max-chars)
+                                            (str (subs s 0 max-chars) "...")
+                                            s))
+                             nil))
+            _ (when-let [{:keys [on-events dir max-bytes redact]} (:payload-dump opts)]
+                (when (and (set? on-events)
+                           (contains? on-events (:event data))
+                           (:payload-dump data)
+                           dir)
+                  (try
+                    (let [dir-file (io/file dir)
+                          _ (.mkdirs dir-file)
+                          sanitized (if redact (redact (:payload-dump data)) (:payload-dump data))
+                          dump-map {:event (:event data)
+                                    :correlation-id (:correlation-id data)
+                                    :event-type (:event-type data)
+                                    :payload sanitized}
+                          content (pr-str dump-map)
+                          max-bytes (or max-bytes (* 1024 1024))
+                          bytes (.getBytes ^String content "UTF-8")
+                          content (if (> (count bytes) max-bytes)
+                                    (let [truncated (subs content 0 (min (count content) max-bytes))]
+                                      (str truncated "..."))
+                                    content)
+                          ts (System/currentTimeMillis)
+                          cid (or (:correlation-id data) (UUID/randomUUID))
+                          file (io/file dir-file (str "event-bus-" ts "-" cid ".edn"))]
+                      (spit file content))
+                    (catch Throwable _ nil))))]
+        (logger level (cond-> (merge {:component component} data)
+                        (contains? data :payload) (assoc :payload safe-payload)
+                        payload-size (assoc :payload-size payload-size)
+                        true (dissoc :payload-dump))))
       (catch Throwable _
         ;; Never allow logger failures to break the critical path
         nil))))
@@ -375,12 +417,14 @@
         (submit-task bus
                      #(handler bus envelope)
                      {:event-type event-type
-                      :correlation-id (:correlation-id envelope)})
+                      :correlation-id (:correlation-id envelope)
+                      :payload-dump (:payload envelope)})
         (if (m/validate schema (:payload envelope))
           (submit-task bus
                        #(handler bus envelope)
                        {:event-type event-type
-                        :correlation-id (:correlation-id envelope)})
+                        :correlation-id (:correlation-id envelope)
+                        :payload-dump (:payload envelope)})
           (log! bus :warn {:event :schema-validation-failed
                            :event-type event-type
                            :correlation-id (:correlation-id envelope)

@@ -1,11 +1,13 @@
 (ns event-bus-test
   (:require [clojure.core.async :as async]
+            [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [event-bus :as bus]
             [malli.core :as m])
   (:import [java.io File]
            [java.sql DriverManager]
+           [java.nio.file Files]
            [java.util UUID]
            [java.util.concurrent CountDownLatch TimeUnit]))
 
@@ -283,6 +285,46 @@
                   logs)))
       (testing "Successful publication is logged"
         (is (some #(= :event-published (:event %)) logs))))))
+
+(deftest log-payload-none-test
+  (let [log-atom (atom [])
+        bus (make-test-bus :logger (fn [_level data] (swap! log-atom conj data))
+                           :log-payload :none)]
+    (bus/subscribe bus :test/event (fn [_ _] (throw (RuntimeException. "FAIL"))))
+    (bus/publish bus :test/event {:secret "x"} {:module :test/log})
+    (Thread/sleep 200)
+    (let [entry (first (filter #(= :handler-failed (:event %)) @log-atom))]
+      (is (some? entry))
+      (is (not (contains? entry :payload))))
+    (bus/close bus)))
+
+(deftest log-payload-keys-test
+  (let [log-atom (atom [])
+        bus (make-test-bus :logger (fn [_level data] (swap! log-atom conj data))
+                           :log-payload :keys)]
+    (is (thrown? IllegalStateException
+                 (bus/publish bus :schema/event {:x "not-int"} {:module :test/schema})))
+    (let [entry (first (filter #(= :publish-schema-validation-failed (:event %)) @log-atom))]
+      (is (some? entry))
+      (is (= #{:x} (set (:payload entry)))))
+    (bus/close bus)))
+
+(deftest log-payload-dump-test
+  (let [log-atom (atom [])
+        dir (.toFile (Files/createTempDirectory "event-bus-dump-"
+                                                (make-array java.nio.file.attribute.FileAttribute 0)))
+        bus (make-test-bus :logger (fn [_level data] (swap! log-atom conj data))
+                           :log-payload :none
+                           :payload-dump {:on-events #{:handler-failed}
+                                          :dir (.getAbsolutePath dir)})]
+    (bus/subscribe bus :test/event (fn [_ _] (throw (RuntimeException. "FAIL"))))
+    (bus/publish bus :test/event {:secret "x"} {:module :test/log})
+    (is (wait-until 2000 #(seq (.listFiles dir))))
+    (let [files (.listFiles dir)
+          content (slurp (first files))
+          dumped (edn/read-string content)]
+      (is (= {:secret "x"} (:payload dumped))))
+    (bus/close bus)))
 
 (deftest publish-schema-validation-test
   (let [log-atom (atom [])

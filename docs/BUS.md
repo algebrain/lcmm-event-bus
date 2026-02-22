@@ -49,6 +49,9 @@
 - `:tx-handler-timeout`: Таймаут обработчика в `transact` (мс, по умолчанию: `10000`).
 - `:handler-max-retries`: Количество ретраев обработчика в `transact` (по умолчанию: `3`).
 - `:handler-backoff-ms`: Задержка между ретраями (мс, по умолчанию: `1000`).
+- `:log-payload`: Режим логирования payload (`:none`, `:keys`, `:truncated`; по умолчанию `:none`).
+- `:log-payload-max-chars`: Максимальная длина payload в логах (по умолчанию `1024`).
+- `:payload-dump`: Дамп payload в файл при ошибках обработчика (map с `:on-events`, `:dir`, `:max-bytes`, `:redact`).
 - `:tx-retention-ms`: Срок хранения успешных транзакций `transact` (мс, по умолчанию: `7 дней`).
 - `:tx-cleanup-interval-ms`: Периодичность фоновой очистки (мс, по умолчанию: `1 час`).
 
