@@ -42,6 +42,16 @@ clj -M:test
 
 The test configuration is located in `tests.edn`.
 
+### Benchmarks
+
+Run performance benchmarks with:
+
+```shell
+bb bench.bb
+```
+
+See **[BENCH.md](docs/BENCH.md)** for parameters and examples.
+
 ## API Documentation
 
 For detailed API documentation, function signatures, and usage examples, please see **[BUS.md](docs/BUS.md)** and **[TRANSACT.md](docs/TRANSACT.md)**.

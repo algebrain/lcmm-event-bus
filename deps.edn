@@ -17,4 +17,7 @@
     :main-opts ["-m" "clj-kondo.main" "--cache-dir" ".clj-kondo-cache" "--lint" "src" "test"]}
    :format
    {:extra-deps {dev.weavejester/cljfmt {:mvn/version "0.15.6"}}
-    :main-opts ["-m" "cljfmt.main" "fix" "src" "test"]}}}
+    :main-opts ["-m" "cljfmt.main" "fix" "src" "test"]}
+   :bench-perf
+   {:extra-paths ["bench"]
+    :extra-deps {criterium/criterium {:mvn/version "0.4.6"}}}}}
