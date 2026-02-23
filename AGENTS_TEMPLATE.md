@@ -39,7 +39,7 @@ print(Path('AGENTS.md').read_text(encoding='utf-8-sig'))
 '@ | python -
   - Записать файл (utf-8 без BOM): @'
 from pathlib import Path
-Path('test.bat').write_text('@echo off\n', encoding='utf-8')
+Path('test.bb').write_text("(println \"ok\")\n", encoding='utf-8')
 '@ | python -
 
 ## Стиль кода и соглашения об именовании
