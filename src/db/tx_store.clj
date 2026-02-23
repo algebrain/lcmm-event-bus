@@ -20,6 +20,9 @@
       :sqlite (do
                 (require 'db.sqlite)
                 ((resolve 'db.sqlite/make-store) tx-store))
+      :filelog (do
+                 (require 'db.filelog)
+                 ((resolve 'db.filelog/make-store) tx-store))
       (throw (IllegalArgumentException.
               (str "Unsupported :db/type in :tx-store: " db-type))))))
 

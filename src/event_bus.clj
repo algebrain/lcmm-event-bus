@@ -135,6 +135,50 @@
     (when (#{:ok :failed} status)
       (complete-tx! bus tx-id (= status :ok) (when (= status :failed) :handler-failed)))))
 
+(defn- run-handler-with-timeout
+  [handler bus envelope timeout-ms]
+  (try
+    (deref (future (handler bus envelope))
+           timeout-ms
+           ::timeout)
+    (catch Throwable e
+      {:error e})))
+
+(defn- evaluate-handler-result
+  [handler-entry payload-value]
+  (let [{:keys [handler schema]} handler-entry]
+    (if (and schema (not (m/validate schema payload-value)))
+      {:status :failed
+       :retryable? false
+       :error {:event :schema-validation-failed
+               :errors (me/humanize (m/explain schema payload-value))}}
+      {:status :ok
+       :retryable? false
+       :handler handler})))
+
+(defn- finalize-handler-result
+  [value]
+  (cond
+    (and (map? value) (:error value))
+    {:status :failed
+     :retryable? true
+     :error {:event :handler-exception
+             :exception (:error value)}}
+
+    (= value ::timeout)
+    {:status :timeout
+     :retryable? true
+     :error {:event :handler-timeout}}
+
+    (true? value)
+    {:status :ok
+     :retryable? false}
+
+    :else
+    {:status :failed
+     :retryable? true
+     :error {:event :handler-returned-false}}))
+
 (defn- process-handler! [bus row]
   (let [[h-eid _msg-eid _tx-eid event-type payload module schema-version
          correlation-id message-id handler-id retry-count] row
@@ -156,38 +200,14 @@
                  {:status :failed
                   :retryable? false
                   :error {:event :handler-missing}}
-                 (let [{:keys [handler schema]} handler-entry]
-                   (if (and schema (not (m/validate schema payload-value)))
-                     {:status :failed
-                      :retryable? false
-                      :error {:event :schema-validation-failed
-                              :errors (me/humanize (m/explain schema payload-value))}}
-                     (let [value (try
-                                   (deref (future (handler bus envelope))
-                                          timeout-ms
-                                          ::timeout)
-                                   (catch Throwable e
-                                     {:error e}))]
-                       (cond
-                         (and (map? value) (:error value))
-                         {:status :failed
-                          :retryable? true
-                          :error {:event :handler-exception
-                                  :exception (:error value)}}
-
-                         (= value ::timeout)
-                         {:status :timeout
-                          :retryable? true
-                          :error {:event :handler-timeout}}
-
-                         (true? value)
-                         {:status :ok
-                          :retryable? false}
-
-                         :else
-                         {:status :failed
-                          :retryable? true
-                          :error {:event :handler-returned-false}})))))
+                 (let [pre-result (evaluate-handler-result handler-entry payload-value)]
+                   (if (:handler pre-result)
+                     (let [value (run-handler-with-timeout (:handler pre-result)
+                                                           bus
+                                                           envelope
+                                                           timeout-ms)]
+                       (finalize-handler-result value))
+                     pre-result)))
         {:keys [status retryable? error]} result
         next-retry (inc (long retry-count))
         exhausted? (and retryable? (>= next-retry max-retries))
@@ -525,6 +545,17 @@
      (log! bus :info {:event :bus-closing})
      (when-let [tx-stop (:tx-stop bus)]
        (reset! tx-stop true))
+     (when-let [tx-store (:tx-store bus)]
+       (when-let [writer (:writer tx-store)]
+         (try
+           (.close ^java.io.Writer writer)
+           (catch Throwable _ nil)))
+       (when-let [flusher-stop (:flusher-stop tx-store)]
+         (reset! flusher-stop true))
+       (when-let [scheduler (:scheduler tx-store)]
+         (try
+           (.shutdown ^java.util.concurrent.ExecutorService scheduler)
+           (catch Throwable _ nil))))
      (when-let [tx-executor ^ExecutorService (:tx-executor bus)]
        (.shutdown tx-executor))
      (let [executor ^ExecutorService (:executor bus)]

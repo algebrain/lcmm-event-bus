@@ -55,3 +55,6 @@ See **[BENCH.md](docs/BENCH.md)** for parameters and examples.
 ## API Documentation
 
 For detailed API documentation, function signatures, and usage examples, please see **[BUS.md](docs/BUS.md)** and **[TRANSACT.md](docs/TRANSACT.md)**.
+
+
+Transact uses an internal store. Supported backends: SQLite (default), Datahike, and Filelog. See `docs/TRANSACT.md`.

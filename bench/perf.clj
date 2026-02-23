@@ -39,7 +39,8 @@
      :backend (or backend :sqlite)
      :handler-backoff-ms (or (parse-long* (get m :handler-backoff-ms)) 10)
      :handler-max-retries (or (parse-long* (get m :handler-max-retries)) 2)
-     :tx-timeout-ms (or (parse-long* (get m :tx-timeout-ms)) 2000)}))
+     :tx-timeout-ms (or (parse-long* (get m :tx-timeout-ms)) 2000)
+     :fsync-interval-ms (parse-long* (get m :fsync-interval-ms))}))
 
 (defn- now-ns [] (System/nanoTime))
 
@@ -65,12 +66,15 @@
     (.deleteOnExit file)
     {:jdbc-url (str "jdbc:sqlite:" (.getAbsolutePath file))}))
 
-(defn- make-tx-store [backend]
+(defn- make-tx-store [backend opts]
   (case backend
     :datahike {:db/type :datahike
                :datahike/config {:store {:backend :mem
                                          :id (str (UUID/randomUUID))}
                                  :schema-flexibility :write}}
+    :filelog {:db/type :filelog
+              :filelog/config (cond-> {:path (str (File/createTempFile "event-bus-filelog-" ".log"))}
+                               (:fsync-interval-ms opts) (assoc :fsync-interval-ms (:fsync-interval-ms opts)))}
     :sqlite {:db/type :sqlite
              :sqlite/config (make-sqlite-config)}
     (throw (IllegalArgumentException.
@@ -139,8 +143,8 @@
      :failures @failures
      :failure-rate (if (zero? events) 0.0 (/ @failures (double events)))}))
 
-(defn- transact-throughput [{:keys [tx-count tx-batch backend handler-backoff-ms handler-max-retries tx-timeout-ms]}]
-  (let [bus (make-bench-bus {:tx-store (make-tx-store backend)
+(defn- transact-throughput [{:keys [tx-count tx-batch backend handler-backoff-ms handler-max-retries tx-timeout-ms] :as opts}]
+  (let [bus (make-bench-bus {:tx-store (make-tx-store backend opts)
                              :handler-backoff-ms handler-backoff-ms
                              :handler-max-retries handler-max-retries})]
     (bus/subscribe bus :bench/tx (fn [_ _] true))
@@ -168,8 +172,8 @@
          :events-per-sec eps
          :timeouts @timeouts}))))
 
-(defn- transact-latency [{:keys [latency-samples tx-batch backend handler-backoff-ms handler-max-retries tx-timeout-ms]}]
-  (let [bus (make-bench-bus {:tx-store (make-tx-store backend)
+(defn- transact-latency [{:keys [latency-samples tx-batch backend handler-backoff-ms handler-max-retries tx-timeout-ms] :as opts}]
+  (let [bus (make-bench-bus {:tx-store (make-tx-store backend opts)
                              :handler-backoff-ms handler-backoff-ms
                              :handler-max-retries handler-max-retries})]
     (bus/subscribe bus :bench/tx (fn [_ _] true))
@@ -234,7 +238,8 @@ TRANSACT THROUGHPUT")
                                    :backend backend
                                    :handler-backoff-ms handler-backoff-ms
                                    :handler-max-retries handler-max-retries
-                                   :tx-timeout-ms tx-timeout-ms}))
+                                   :tx-timeout-ms tx-timeout-ms
+                                   :fsync-interval-ms (:fsync-interval-ms opts)}))
 
     (println "
 TRANSACT LATENCY")
@@ -243,4 +248,5 @@ TRANSACT LATENCY")
                                 :backend backend
                                 :handler-backoff-ms handler-backoff-ms
                                 :handler-max-retries handler-max-retries
-                                :tx-timeout-ms tx-timeout-ms}))))
+                                :tx-timeout-ms tx-timeout-ms
+                                :fsync-interval-ms (:fsync-interval-ms opts)}))))

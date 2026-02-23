@@ -15,6 +15,7 @@ bb bench.bb --timeout-min=10
 bb bench.bb --mode=buffered --buffer-size=512 --concurrency=8
 bb bench.bb --events=20000 --latency-samples=2000
 bb bench.bb --backend=sqlite --tx-count=200 --tx-batch=10
+bb bench.bb --backend=filelog --fsync-interval-ms=2
 ```
 
 ## Параметры
@@ -27,7 +28,8 @@ bb bench.bb --backend=sqlite --tx-count=200 --tx-batch=10
 - `--latency-samples`: число измерений для latency (по умолчанию `1000`).
 - `--tx-count`: число транзакций в throughput‑тесте transact (по умолчанию `200`).
 - `--tx-batch`: число событий в одной transact‑транзакции (по умолчанию `1`).
-- `--backend`: `datahike` или `sqlite` (по умолчанию `sqlite`).
+- `--backend`: `datahike`, `sqlite` или `filelog` (по умолчанию `sqlite`).
+- `--fsync-interval-ms`: батч‑fsync для `filelog` (мс).
 - `--handler-backoff-ms`: задержка между ретраями transact (по умолчанию `10`).
 - `--handler-max-retries`: максимум ретраев transact (по умолчанию `2`).
 - `--tx-timeout-ms`: таймаут ожидания результата transact в бенчмарках (по умолчанию `2000`).

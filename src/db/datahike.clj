@@ -1,7 +1,8 @@
 (ns db.datahike
   (:require [datahike.api :as d]
             [db.tx-store :as tx-store])
-  (:import [java.util UUID]))
+  (:import [java.util UUID]
+           [java.util.concurrent.locks ReentrantLock]))
 
 (def ^:private tx-schema
   [{:db/ident :tx/id
@@ -68,13 +69,31 @@
     :db/valueType :db.type/instant
     :db/cardinality :db.cardinality/one}])
 
-(defrecord DatahikeStore [config conn])
+(defrecord DatahikeStore [config conn lock])
+
+(defn- with-lock
+  [store f]
+  (let [lock ^ReentrantLock (:lock store)]
+    (.lock lock)
+    (try
+      (f)
+      (finally
+        (.unlock lock)))))
+
+(defn- transact-sync
+  [store tx-data]
+  (with-lock store
+    (fn []
+      (let [result (d/transact (:conn store) tx-data)]
+        (if (instance? clojure.lang.IDeref result)
+          @result
+          result)))))
 
 (defn make-store
   [{:keys [datahike/config]}]
   (when-not config
     (throw (IllegalArgumentException. "Missing :datahike/config in :tx-store.")))
-  (->DatahikeStore config nil))
+  (->DatahikeStore config nil (ReentrantLock.)))
 
 (extend-type DatahikeStore
   tx-store/TxStore
@@ -82,12 +101,13 @@
     (try
       (d/create-database (:config store))
       (catch Throwable _ nil))
-    (let [conn (d/connect (:config store))]
-      (d/transact conn tx-schema)
-      (assoc store :conn conn)))
+    (let [conn (d/connect (:config store))
+          store (assoc store :conn conn)]
+      (transact-sync store tx-schema)
+      store))
 
   (transact! [store tx-data]
-    (d/transact (:conn store) tx-data))
+    (transact-sync store tx-data))
 
   (build-tx-data [_store tx-id now events listeners]
     (let [tx-eid (d/tempid :db.part/user)
@@ -129,26 +149,29 @@
        events)))
 
   (query-pending-handlers [store now]
-    (let [db (d/db (:conn store))]
-      (d/q '[:find ?h ?msg ?tx-id ?event-type ?payload ?module ?schema-version
-             ?correlation-id ?message-id ?handler-id ?retry-count
-             :in $ ?now
-             :where
-             [?h :h/status :pending]
-             [?h :h/next-at ?next-at]
-             [(<= ?next-at ?now)]
-             [?h :h/msg ?msg]
-             [?h :h/handler-id ?handler-id]
-             [?h :h/retry-count ?retry-count]
-             [?msg :msg/tx ?tx]
-             [?tx :tx/id ?tx-id]
-             [?msg :msg/event-type ?event-type]
-             [?msg :msg/payload ?payload]
-             [?msg :msg/module ?module]
-             [?msg :msg/schema-version ?schema-version]
-             [?msg :msg/correlation-id ?correlation-id]
-             [?msg :msg/message-id ?message-id]]
-           db now)))
+    (with-lock store
+      (fn []
+        (let [db (d/db (:conn store))]
+          (vec
+           (d/q '[:find ?h ?msg ?tx-id ?event-type ?payload ?module ?schema-version
+                  ?correlation-id ?message-id ?handler-id ?retry-count
+                  :in $ ?now
+                  :where
+                  [?h :h/status :pending]
+                  [?h :h/next-at ?next-at]
+                  [(<= ?next-at ?now)]
+                  [?h :h/msg ?msg]
+                  [?h :h/handler-id ?handler-id]
+                  [?h :h/retry-count ?retry-count]
+                  [?msg :msg/tx ?tx]
+                  [?tx :tx/id ?tx-id]
+                  [?msg :msg/event-type ?event-type]
+                  [?msg :msg/payload ?payload]
+                  [?msg :msg/module ?module]
+                  [?msg :msg/schema-version ?schema-version]
+                  [?msg :msg/correlation-id ?correlation-id]
+                  [?msg :msg/message-id ?message-id]]
+                db now))))))
 
   (update-handler! [store update]
     (let [entity {:db/id (:handler-row-id update)
@@ -156,71 +179,75 @@
                   :h/retry-count (:retry-count update)
                   :h/updated-at (:updated-at update)
                   :h/next-at (:next-at update)}]
-      (d/transact (:conn store)
-                  [(cond-> entity
-                     (:last-error update) (assoc :h/last-error (:last-error update)))])))
+      (transact-sync store
+                     [(cond-> entity
+                        (:last-error update) (assoc :h/last-error (:last-error update)))])))
 
   (tx-status [store tx-id]
-    (let [db (d/db (:conn store))
-          statuses (map first
-                        (d/q '[:find ?status
-                               :in $ ?tx-id
-                               :where
-                               [?tx :tx/id ?tx-id]
-                               [?msg :msg/tx ?tx]
-                               [?h :h/msg ?msg]
-                               [?h :h/status ?status]]
-                             db tx-id))]
-      (cond
-        (empty? statuses) :ok
-        (some #{:failed :timeout} statuses) :failed
-        (every? #{:ok} statuses) :ok
-        :else :pending)))
+    (with-lock store
+      (fn []
+        (let [db (d/db (:conn store))
+              statuses (map first
+                            (d/q '[:find ?status
+                                   :in $ ?tx-id
+                                   :where
+                                   [?tx :tx/id ?tx-id]
+                                   [?msg :msg/tx ?tx]
+                                   [?h :h/msg ?msg]
+                                   [?h :h/status ?status]]
+                                 db tx-id))]
+          (cond
+            (empty? statuses) :ok
+            (some #{:failed :timeout} statuses) :failed
+            (every? #{:ok} statuses) :ok
+            :else :pending)))))
 
   (update-tx! [store tx-id status now]
-    (d/transact (:conn store)
-                [{:tx/id tx-id
-                  :tx/status status
-                  :tx/updated-at now}]))
+    (transact-sync store
+                   [{:tx/id tx-id
+                     :tx/status status
+                     :tx/updated-at now}]))
 
   (cleanup! [store now retention-ok-ms]
-    (let [cutoff (java.util.Date. (- (.getTime ^java.util.Date now) (long retention-ok-ms)))
-          db (d/db (:conn store))
-          tx-eids (mapv first
-                        (d/q '[:find ?tx
-                               :in $ ?cutoff
-                               :where
-                               [?tx :tx/status :ok]
-                               [?tx :tx/updated-at ?updated]
-                               [(< ?updated ?cutoff)]]
-                             db cutoff))]
-      (if (empty? tx-eids)
-        0
-        (let [tx-set (set tx-eids)
-              msg-eids (if (seq tx-eids)
-                         (mapv first
-                               (d/q '[:find ?msg
-                                      :in $ ?tx-set
-                                      :where
-                                      [?msg :msg/tx ?tx]
-                                      [(contains? ?tx-set ?tx)]]
-                                    db tx-set))
-                         [])
-              msg-set (set msg-eids)
-              handler-eids (if (seq msg-eids)
+    (with-lock store
+      (fn []
+        (let [cutoff (java.util.Date. (- (.getTime ^java.util.Date now) (long retention-ok-ms)))
+              db (d/db (:conn store))
+              tx-eids (mapv first
+                            (d/q '[:find ?tx
+                                   :in $ ?cutoff
+                                   :where
+                                   [?tx :tx/status :ok]
+                                   [?tx :tx/updated-at ?updated]
+                                   [(< ?updated ?cutoff)]]
+                                 db cutoff))]
+          (if (empty? tx-eids)
+            0
+            (let [tx-set (set tx-eids)
+                  msg-eids (if (seq tx-eids)
                              (mapv first
-                                   (d/q '[:find ?h
-                                          :in $ ?msg-set
+                                   (d/q '[:find ?msg
+                                          :in $ ?tx-set
                                           :where
-                                          [?h :h/msg ?msg]
-                                          [(contains? ?msg-set ?msg)]]
-                                        db msg-set))
+                                          [?msg :msg/tx ?tx]
+                                          [(contains? ?tx-set ?tx)]]
+                                        db tx-set))
                              [])
-              retracts (into []
-                             (concat
-                              (mapv (fn [eid] [:db.fn/retractEntity eid]) handler-eids)
-                              (mapv (fn [eid] [:db.fn/retractEntity eid]) msg-eids)
-                              (mapv (fn [eid] [:db.fn/retractEntity eid]) tx-eids)))]
-          (when (seq retracts)
-            (d/transact (:conn store) retracts))
-          (count tx-eids))))))
+                  msg-set (set msg-eids)
+                  handler-eids (if (seq msg-eids)
+                                 (mapv first
+                                       (d/q '[:find ?h
+                                              :in $ ?msg-set
+                                              :where
+                                              [?h :h/msg ?msg]
+                                              [(contains? ?msg-set ?msg)]]
+                                            db msg-set))
+                                 [])
+                  retracts (into []
+                                 (concat
+                                  (mapv (fn [eid] [:db.fn/retractEntity eid]) handler-eids)
+                                  (mapv (fn [eid] [:db.fn/retractEntity eid]) msg-eids)
+                                  (mapv (fn [eid] [:db.fn/retractEntity eid]) tx-eids)))]
+              (when (seq retracts)
+                (transact-sync store retracts))
+              (count tx-eids))))))))
