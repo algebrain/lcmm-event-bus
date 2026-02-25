@@ -1,11 +1,11 @@
 #!/usr/bin/env bb
 (ns test
-  (:require [babashka.process :refer [process shell]]
+  (:require [babashka.process :refer [process]]
             [clojure.string :as str])
   (:import [java.util.concurrent TimeUnit]))
 
-(def green "\u001b[1;32m")
-(def reset "\u001b[0m")
+(def green "[1;32m")
+(def reset "[0m")
 
 (defn started-at []
   (let [t (java.time.LocalTime/now)
@@ -38,6 +38,14 @@
   (or (parse-timeout-ms *command-line-args*)
       (* 5 60 1000)))
 
+(defn- destroy-tree! [^Process p]
+  (let [^java.lang.ProcessHandle ph (.toHandle p)
+        consumer (reify java.util.function.Consumer
+                   (accept [_ ^java.lang.ProcessHandle h]
+                     (.destroyForcibly h)))]
+    (.forEach (.descendants ph) consumer)
+    (.destroyForcibly p)))
+
 (defn run! [cmd]
   (let [proc (process {:inherit true} cmd)
         ^Process p (:proc proc)
@@ -47,8 +55,11 @@
         (when (not= 0 exit)
           (System/exit exit)))
       (do
-        (.destroyForcibly p)
+        (println (str green "TIMEOUT after " timeout-ms " ms: " cmd reset))
+        (destroy-tree! p)
         (.waitFor p 5000 TimeUnit/MILLISECONDS)
+        (when (.isAlive p)
+          (println (str green "Process still alive after forced destroy" reset)))
         (System/exit 1)))))
 
 (started-at)
