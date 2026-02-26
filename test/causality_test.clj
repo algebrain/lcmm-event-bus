@@ -48,7 +48,7 @@
       (is (support/await-on-latch latch) "Cycle detection should have triggered")
       (is (instance? IllegalStateException @exception-atom) "An IllegalStateException should have been caught")
       (is (str/starts-with? (.getMessage @exception-atom) "Cycle detected"))
-      (is (= :event/a (:message-type root-envelope)))
+      (is (= :event/a (:event-type root-envelope)))
       (is (some? (:correlation-id root-envelope))))
     (bus/close bus)))
 

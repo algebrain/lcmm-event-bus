@@ -6,26 +6,29 @@
 
 (deftest unsubscribe-test
   (let [bus (support/make-test-bus)
-        latch (CountDownLatch. 1)
         calls (atom 0)
-        handler-to-remove (fn [_bus _] (swap! calls inc))]
+        phase-latch (atom nil)
+        signal! (fn [] (when-let [l @phase-latch] (.countDown ^CountDownLatch l)))
+        handler-to-remove (fn [_bus _] (swap! calls inc) (signal!))
+        meta-handler (fn [_bus _] (swap! calls inc) (signal!))]
     (bus/subscribe bus :event/inc handler-to-remove)
-    (bus/subscribe bus :event/inc (fn [_bus _] (swap! calls inc) (.countDown latch)) {:meta {:id :b}})
+    (bus/subscribe bus :event/inc meta-handler {:meta {:id :b}})
 
+    (reset! phase-latch (CountDownLatch. 2))
     (bus/publish bus :event/inc nil {:module :test/unsub})
-    (is (support/await-on-latch latch))
+    (is (support/await-on-latch @phase-latch))
     (is (= 2 @calls))
 
     (bus/unsubscribe bus :event/inc handler-to-remove)
-    (let [latch2 (CountDownLatch. 1)]
-      (bus/subscribe bus :event/inc (fn [_bus _] (.countDown latch2)) {:meta {:id :b}})
-      (bus/publish bus :event/inc nil {:module :test/unsub})
-      (is (support/await-on-latch latch2))
-      (is (= 3 @calls)))
+    (reset! phase-latch (CountDownLatch. 1))
+    (bus/publish bus :event/inc nil {:module :test/unsub})
+    (is (support/await-on-latch @phase-latch))
+    (is (= 3 @calls))
 
     (bus/unsubscribe bus :event/inc {:id :b})
+    (reset! phase-latch (CountDownLatch. 1))
     (bus/publish bus :event/inc nil {:module :test/unsub})
-    (Thread/sleep 100)
+    (is (false? (support/await-on-latch @phase-latch)))
     (is (= 3 @calls))
     (bus/close bus)))
 

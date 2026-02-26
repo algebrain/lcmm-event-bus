@@ -20,7 +20,7 @@
       (is (some? (:message-id published-envelope)) "Published envelope should have a message-id")
       (is (instance? UUID (:message-id published-envelope)) "message-id should be a UUID"))
     (is (support/await-on-latch latch) "Handler should have been called")
-    (is (= :test/event (:message-type @received)))
+    (is (= :test/event (:event-type @received)))
     (is (= {:data 42} (:payload @received)))
     (bus/close bus)))
 

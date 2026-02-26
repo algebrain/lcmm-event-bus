@@ -42,6 +42,11 @@ clj -M:test
 
 The test configuration is located in `tests.edn`.
 
+Note: `test/transact_datahike_test.clj` is intentionally kept as
+`test/transact_datahike_test.clj_` for now, because Datahike tests are
+temporarily disabled in this repository setup. Rename it back to `.clj`
+to include those tests again.
+
 ### Benchmarks
 
 Run performance benchmarks with:

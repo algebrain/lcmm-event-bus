@@ -76,7 +76,7 @@
   {:message-id      (UUID/randomUUID)
    :correlation-id  (or correlation-id (UUID/randomUUID))
    :causation-path  []
-   :message-type    event-type
+   :event-type      event-type
    :module          module
    :schema-version  schema-version
    :payload         payload})
@@ -85,7 +85,7 @@
   "Creates a child envelope based on a parent, enabling causality tracking."
   [parent-envelope new-event-type new-payload {:keys [max-depth module] :as _bus-opts}]
   (let [new-causation-path (conj (:causation-path parent-envelope)
-                                 [(:module parent-envelope) (:message-type parent-envelope)])]
+                                 [(:module parent-envelope) (:event-type parent-envelope)])]
     (when (some #(= % [module new-event-type]) new-causation-path)
       (throw (IllegalStateException.
               (str "Cycle detected: event " new-event-type " already in causation path for module " module "."))))
@@ -192,7 +192,7 @@
         envelope {:message-id message-id
                   :correlation-id correlation-id
                   :causation-path []
-                  :message-type event-type
+                  :event-type event-type
                   :module module
                   :schema-version schema-version
                   :payload payload-value}

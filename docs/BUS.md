@@ -166,7 +166,7 @@
 - `:message-id` — UUID сообщения.
 - `:correlation-id` — UUID цепочки событий.
 - `:causation-path` — вектор пар `[module event-type]`.
-- `:message-type` — тип события (keyword).
+- `:event-type` — тип события (keyword).
 - `:module` — модуль-инициатор (keyword).
 - `:schema-version` — версия схемы (`"1.0"` по умолчанию).
 - `:payload` — полезная нагрузка события.
