@@ -30,8 +30,12 @@
 
 ```clojure
 (require '[event-bus :as bus])
+(require '[malli.core :as m])
 
-(def a-bus (bus/make-bus))
+(def registry
+  {:demo/ping {"1.0" (m/schema [:map [:msg :string]])}})
+
+(def a-bus (bus/make-bus :schema-registry registry))
 ```
 
 #### Опции
