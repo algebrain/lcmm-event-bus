@@ -19,5 +19,7 @@ plan-*.md
 .plans
 *.local
 *.local.*
+.drafts
+.mem26
 
 AGENTS.md
