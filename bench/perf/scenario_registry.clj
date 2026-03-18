@@ -34,16 +34,28 @@
     :group :buffered
     :scenario-fn buffered/buffered-backpressure-run
     :modes #{:buffered}}
+   {:name :buffered-backpressure-fanout
+    :group :buffered
+    :scenario-fn buffered/buffered-backpressure-fanout-run
+    :modes #{:buffered}}
    {:name :buffered-drain-behavior
     :group :buffered
     :scenario-fn buffered/buffered-drain-run
+    :modes #{:buffered}}
+   {:name :buffered-drain-fanout
+    :group :buffered
+    :scenario-fn buffered/buffered-drain-fanout-run
     :modes #{:buffered}}
    (memory-scenario :publish-memory-baseline :retained memory-retained/publish-memory-baseline-run)
    (memory-scenario :publish-memory-payload :retained memory-retained/publish-memory-payload-run)
    (assoc (memory-scenario :buffered-memory-pressure :retained memory-retained/buffered-memory-pressure-run)
           :modes #{:buffered})
+   (assoc (memory-scenario :buffered-memory-pressure-fanout :retained memory-retained/buffered-memory-pressure-fanout-run)
+          :modes #{:buffered})
    (memory-scenario :publish-peak-burst :peak memory-peak/publish-peak-burst-run)
    (assoc (memory-scenario :buffered-peak-pressure :peak memory-peak/buffered-peak-pressure-run)
+          :modes #{:buffered})
+   (assoc (memory-scenario :buffered-peak-pressure-fanout :peak memory-peak/buffered-peak-pressure-fanout-run)
           :modes #{:buffered})
    {:name :transact-throughput
     :group :transact

@@ -69,6 +69,10 @@
   (when (nil? module)
     (throw (IllegalArgumentException. "Missing required :module in publish options."))))
 
+(defn- current-handlers
+  [bus event-type]
+  (get @(:listeners bus) event-type []))
+
 (defn- make-envelope
   "Creates a root envelope for a new event chain."
   [event-type payload {:keys [correlation-id schema-version module]
@@ -273,6 +277,101 @@
                           (fn [] (tx-worker-loop bus stop-flag)))]
       (reset! (:tx-worker bus) worker))))
 
+(defn- invoke-handler!
+  [bus handler envelope event-type]
+  (try
+    (handler bus envelope)
+    (catch Throwable e
+      (log! bus :error {:event :handler-failed
+                        :event-type event-type
+                        :correlation-id (:correlation-id envelope)
+                        :payload-dump (:payload envelope)
+                        :exception e}))))
+
+(defn- dispatch-handler-entry-now!
+  [bus envelope event-type {:keys [handler schema]}]
+  (if-not schema
+    (.submit ^ExecutorService (:executor bus)
+             ^Runnable #(invoke-handler! bus handler envelope event-type))
+    (if (m/validate schema (:payload envelope))
+      (.submit ^ExecutorService (:executor bus)
+               ^Runnable #(invoke-handler! bus handler envelope event-type))
+      (log! bus :warn {:event :schema-validation-failed
+                       :event-type event-type
+                       :correlation-id (:correlation-id envelope)
+                       :payload (:payload envelope)
+                       :errors (me/humanize (m/explain schema (:payload envelope)))}))))
+
+(defn- dispatch-event-now!
+  [bus envelope handlers]
+  (let [event-type (:event-type envelope)]
+    (doseq [handler-entry handlers]
+      (dispatch-handler-entry-now! bus envelope event-type handler-entry))))
+
+(defn- dispatch-buffered-event!
+  [bus envelope]
+  (let [event-type (:event-type envelope)
+        handlers (current-handlers bus event-type)]
+    (doseq [{:keys [handler schema]} handlers]
+      (if-not schema
+        (invoke-handler! bus handler envelope event-type)
+        (if (m/validate schema (:payload envelope))
+          (invoke-handler! bus handler envelope event-type)
+          (log! bus :warn {:event :schema-validation-failed
+                           :event-type event-type
+                           :correlation-id (:correlation-id envelope)
+                           :payload (:payload envelope)
+                           :errors (me/humanize (m/explain schema (:payload envelope)))}))))))
+
+(defn- dispatch-queued-item!
+  [bus item]
+  (case (:kind item)
+    :dispatch-event (dispatch-buffered-event! bus (:envelope item))
+    nil))
+
+(defn- buffered-consumer-loop
+  [bus]
+  (let [executor ^ExecutorService (:executor bus)
+        queue ^ArrayBlockingQueue (:queue bus)]
+    (loop []
+      (if (.isShutdown executor)
+        nil
+        (let [result (try
+                       (let [item (.take queue)]
+                         (when item
+                           (dispatch-queued-item! bus item)))
+                       ::ok
+                       (catch InterruptedException _
+                         ::stop))]
+          (when (= result ::ok)
+            (recur)))))))
+
+(defn- start-buffered-consumers!
+  [bus]
+  (when-let [consumers-atom (:consumers bus)]
+    (when (empty? @consumers-atom)
+      (let [executor ^ExecutorService (:executor bus)
+            concurrency (or (-> bus :opts :concurrency) 4)
+            consumers (doall
+                       (repeatedly concurrency
+                                   #(.submit executor
+                                             ^Runnable
+                                             (fn []
+                                               (buffered-consumer-loop bus)))))]
+        (reset! consumers-atom consumers)))))
+
+(defn- enqueue-buffered-event!
+  [bus envelope]
+  (let [item {:kind :dispatch-event
+              :event-type (:event-type envelope)
+              :envelope envelope}
+        queue ^ArrayBlockingQueue (:queue bus)]
+    (when-not (.offer queue item)
+      (log! bus :error {:event :buffer-full
+                        :event-type (:event-type envelope)
+                        :correlation-id (:correlation-id envelope)})
+      (throw (IllegalStateException. "Event bus buffer is full.")))))
+
 ;; ============================
 ;; Bus Constructor
 ;; ============================
@@ -310,70 +409,32 @@
           (assoc bus-map :executor (Executors/newVirtualThreadPerTaskExecutor))
 
           :buffered
-          (let [{:keys [buffer-size concurrency]
-                 :or   {buffer-size 1024, concurrency 4}} opts
+          (let [{:keys [buffer-size]
+                 :or   {buffer-size 1024}} opts
                 queue (ArrayBlockingQueue. buffer-size)
-                executor (Executors/newVirtualThreadPerTaskExecutor)
-                consumers (doall
-                           (repeatedly concurrency
-                                       #(.submit ^ExecutorService executor
-                                                 ^Runnable
-                                                 (fn []
-                                                   (loop []
-                                                     (if (.isShutdown executor)
-                                                       nil
-                                                       (let [result (try
-                                                                      (let [task (.take queue)]
-                                                                        (when task (task)))
-                                                                      ::ok
-                                                                      (catch InterruptedException _
-                                                                        ::stop))]
-                                                         (when (= result ::ok)
-                                                           (recur)))))))))]
+                executor (Executors/newVirtualThreadPerTaskExecutor)]
             (assoc bus-map
                    :executor executor
                    :queue queue
-                   :consumers consumers)))]
-    (if-let [tx-store (:tx-store final-opts)]
-      (let [store (tx-store/init-store tx-store)
-            bus (assoc bus-with-executor
-                       :tx-store store
-                       :tx-results (atom {})
-                       :tx-worker (atom nil)
-                       :tx-stop (atom false)
-                       :tx-cleanup-last (atom (System/currentTimeMillis))
-                       :tx-executor (Executors/newVirtualThreadPerTaskExecutor))]
-        (start-tx-worker! bus)
-        bus)
-      bus-with-executor)))
-
-;; ============================
-;; Internal Task Submission
-;; ============================
+                   :consumers (atom []))))]
+    (doto (cond-> bus-with-executor
+            (:tx-store final-opts)
+            (assoc :tx-store (tx-store/init-store (:tx-store final-opts))
+                   :tx-results (atom {})
+                   :tx-worker (atom nil)
+                   :tx-stop (atom false)
+                   :tx-cleanup-last (atom (System/currentTimeMillis))
+                   :tx-executor (Executors/newVirtualThreadPerTaskExecutor)))
+      ((fn [bus]
+         (when (= :buffered mode)
+           (start-buffered-consumers! bus))))
+      ((fn [bus]
+         (when (:tx-store bus)
+           (start-tx-worker! bus)))))))
 
 (defn- ensure-not-closed! [bus]
   (when @(:closed? bus)
     (throw (IllegalStateException. "Event bus is closed."))))
-
-(defn- submit-task [bus f & [context]]
-  (ensure-not-closed! bus)
-  (let [task (fn []
-               (try
-                 (f)
-                 (catch Throwable e
-                   (log! bus :error
-                         (merge {:event :handler-failed
-                                 :exception e}
-                                (when (map? context) context))))))]
-    (case (:mode (:opts bus))
-      :unlimited
-      (.submit ^ExecutorService (:executor bus) ^Runnable task)
-
-      :buffered
-      (let [^ArrayBlockingQueue queue (:queue bus)]
-        (when-not (.offer queue task)
-          (log! bus :error {:event :buffer-full})
-          (throw (IllegalStateException. "Event bus buffer is full.")))))))
 
 ;; ============================
 ;; Public API
@@ -412,7 +473,7 @@
         registry (-> bus :opts :schema-registry)
         event-schemas (get registry event-type)
         publish-schema (get event-schemas schema-version)
-        handlers (get @(:listeners bus) event-type [])]
+        handlers (current-handlers bus event-type)]
     (when-not publish-schema
       (log! bus :error {:event :publish-schema-missing
                         :event-type event-type
@@ -429,27 +490,12 @@
                         :errors (me/humanize (m/explain publish-schema payload))})
       (throw (IllegalStateException.
               (str "Publish schema validation failed for event " event-type " version " schema-version))))
+    (case (:mode (:opts bus))
+      :unlimited (dispatch-event-now! bus envelope handlers)
+      :buffered (enqueue-buffered-event! bus envelope))
     (log! bus :info {:event :event-published
                      :correlation-id (:correlation-id envelope)
                      :envelope envelope})
-    (doseq [{:keys [handler schema]} handlers]
-      (if-not schema
-        (submit-task bus
-                     #(handler bus envelope)
-                     {:event-type event-type
-                      :correlation-id (:correlation-id envelope)
-                      :payload-dump (:payload envelope)})
-        (if (m/validate schema (:payload envelope))
-          (submit-task bus
-                       #(handler bus envelope)
-                       {:event-type event-type
-                        :correlation-id (:correlation-id envelope)
-                        :payload-dump (:payload envelope)})
-          (log! bus :warn {:event :schema-validation-failed
-                           :event-type event-type
-                           :correlation-id (:correlation-id envelope)
-                           :payload (:payload envelope)
-                           :errors (me/humanize (m/explain schema (:payload envelope)))}))))
     envelope))
 
 (defn transact
@@ -561,7 +607,7 @@
      (let [executor ^ExecutorService (:executor bus)]
        (.shutdown executor)
        (when-let [consumers (:consumers bus)]
-         (run! #(.cancel % true) consumers))
+         (run! #(.cancel % true) @consumers))
        (try
          (when-not (.awaitTermination executor timeout TimeUnit/MILLISECONDS)
            (log! bus :warn {:event :shutdown-timeout}))

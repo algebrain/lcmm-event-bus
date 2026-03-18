@@ -3,6 +3,10 @@
             [perf.bus :as bench-bus]
             [perf.util :as util]))
 
+(defn- fanout-subscribers
+  [subscribers]
+  (max 8 (long (or subscribers 1))))
+
 (defn- start-sampler! [peak* stop?]
   (future
     (while (not @stop?)
@@ -46,6 +50,36 @@
             (swap! failures inc))))
       (Thread/sleep (min drain-timeout-ms 250))
       {:accepted @accepted
+       :failures @failures
+       :baseline-used-heap-kb (util/bytes->kb baseline)
+       :peak-used-heap-kb (util/bytes->kb @peak*)
+       :peak-delta-kb (util/bytes->kb (- @peak* baseline))}
+      (finally
+       (reset! stop? true)
+       @sampler
+       (bus/close bus)))))
+
+(defn buffered-peak-pressure-fanout-run [{:keys [events payload-bytes drain-timeout-ms subscribers] :as opts}]
+  (let [bus (bench-bus/make-bench-bus (assoc opts :mode :buffered))
+        subscribers (fanout-subscribers subscribers)
+        peak* (atom 0)
+        stop? (atom false)
+        accepted (atom 0)
+        failures (atom 0)
+        baseline (util/used-heap-bytes)
+        sampler (start-sampler! peak* stop?)]
+    (try
+      (dotimes [_ subscribers]
+        (bus/subscribe bus :bench/event (fn [_ _] (Thread/sleep 5))))
+      (dotimes [i events]
+        (try
+          (bus/publish bus :bench/event (util/build-payload payload-bytes i) {:module :bench})
+          (swap! accepted inc)
+          (catch IllegalStateException _
+            (swap! failures inc))))
+      (Thread/sleep (min drain-timeout-ms 250))
+      {:subscribers subscribers
+       :accepted @accepted
        :failures @failures
        :baseline-used-heap-kb (util/bytes->kb baseline)
        :peak-used-heap-kb (util/bytes->kb @peak*)

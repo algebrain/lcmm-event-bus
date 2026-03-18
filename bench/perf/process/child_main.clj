@@ -8,7 +8,8 @@
 (def child-scenarios
   (merge memory-retained/child-scenarios
          {:publish-peak-burst memory-peak/publish-peak-burst-run
-          :buffered-peak-pressure memory-peak/buffered-peak-pressure-run}))
+          :buffered-peak-pressure memory-peak/buffered-peak-pressure-run
+          :buffered-peak-pressure-fanout memory-peak/buffered-peak-pressure-fanout-run}))
 
 (defn- parse-child-args [args]
   (loop [[arg & more] args

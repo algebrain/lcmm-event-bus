@@ -41,9 +41,15 @@ bb bench.bb --backend=filelog --fsync-interval-ms=2
   throughput полного цикла publish -> delivery handler-у.
 - `buffered-backpressure`:
   доля отказов при переполнении очереди в `:buffered`.
+- `buffered-backpressure-fanout`:
+  то же, но с несколькими медленными подписчиками.
+  Нужен, чтобы видеть влияние fanout на buffered-поведение.
 - `buffered-drain-behavior`:
   как быстро очередь опустошается после burst-нагрузки.
   В summary дополнительно выводится `processed`, а `completed?` относится к реально принятым событиям.
+- `buffered-drain-fanout`:
+  то же, но с несколькими подписчиками.
+  Нужен для проверки, что fanout не съедает queue capacity на этапе enqueue.
 
 ### Memory
 
@@ -56,12 +62,17 @@ bb bench.bb --backend=filelog --fsync-interval-ms=2
 - `buffered-memory-pressure`:
   как ведет себя heap при заполнении очереди в `:buffered`.
   По умолчанию запускается в отдельной JVM.
+- `buffered-memory-pressure-fanout`:
+  retained memory для `:buffered` при нескольких медленных подписчиках.
+  Нужен, чтобы видеть memory cost именно fanout-heavy buffered-нагрузки.
 - `publish-peak-burst`:
   грубая оценка пика heap во время burst-публикаций.
   По умолчанию запускается в отдельной JVM.
 - `buffered-peak-pressure`:
   грубая оценка пика heap при burst-нагрузке в `:buffered`.
   По умолчанию запускается в отдельной JVM.
+- `buffered-peak-pressure-fanout`:
+  peak heap для `:buffered` при нескольких медленных подписчиках.
 
 ### Transact
 
@@ -80,6 +91,8 @@ bb bench.bb --backend=filelog --fsync-interval-ms=2
 - `--buffer-size`: размер очереди в buffered режиме (по умолчанию `1024`).
 - `--concurrency`: количество worker‑ов в buffered режиме (по умолчанию `4`).
 - `--subscribers`: число подписчиков для publish тестов (по умолчанию `1`).
+- Для fanout-сценариев `buffered-*fanout` значение `--subscribers` поднимается как минимум до `8`,
+  чтобы сценарий действительно был чувствителен к fanout.
 - `--events`: количество событий для throughput‑тестов publish (по умолчанию `10000`).
 - `--latency-samples`: число измерений для latency (по умолчанию `1000`).
 - `--payload-bytes`: размер служебного payload для publish/memory тестов.
