@@ -40,6 +40,19 @@
                (str/starts-with? % "--timeout-min="))
           args))
 
+(defn- has-flag? [args flag]
+  (boolean (some #(= % flag) args)))
+
+(defn- has-prefix? [args prefix]
+  (boolean (some #(str/starts-with? % prefix) args)))
+
+(defn- maybe-add-defaults [args]
+  (cond-> (vec args)
+    (has-flag? args "--quick")
+    (#(cond-> %
+        (not (has-prefix? % "--warmup-iterations=")) (conj "--warmup-iterations=1")
+        (not (has-prefix? % "--measure-iterations=")) (conj "--measure-iterations=1")))))
+
 (defn- destroy-tree! [^Process p]
   (let [^java.lang.ProcessHandle ph (.toHandle p)
         consumer (reify java.util.function.Consumer
@@ -66,7 +79,7 @@
 
 (defn -main [& _]
   (started-at)
-  (let [args (bench-args *command-line-args*)
+  (let [args (-> *command-line-args* bench-args maybe-add-defaults)
         suffix (if (seq args) (str " -- " (str/join " " args)) "")]
     (run! (str "clj -J--enable-native-access=ALL-UNNAMED -M:bench-perf -m perf" suffix))))
 

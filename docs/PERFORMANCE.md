@@ -103,13 +103,34 @@
 bb bench.bb
 ```
 
+Для быстрых локальных прогонов во время разработки:
+
+```powershell
+bb bench.bb --quick
+```
+
+Для memory-сценариев отдельно:
+
+```powershell
+bb bench.bb --only=memory
+bb bench.bb --quick --only=memory
+```
+
 Параметры смотрите в `docs/BENCH.md`.
+
+Важно:
+
+- `publish-call-latency` и `publish-end-to-end-latency` отвечают на разные вопросы, их не стоит смешивать.
+- Memory benchmark-ы показывают грубое удержание heap после сценария, а не точные аллокации по объектам.
+- Если нужен точный ответ по аллокациям и GC, используйте внешний профилировщик поверх сценариев из `bench.bb`.
 
 ## Что измерять в проде
 
 Минимальный набор метрик:
 
 - Latency p50/p95/p99 для `publish`.
+- Отдельно latency вызова `publish` и latency доставки до handler-а, если это важно для SLA.
 - Latency p50/p95/p99 для полного `transact` цикла.
 - Кол-во ошибок обработчиков и ретраев.
 - В buffered режиме — частоту `buffer full`.
+- Для buffered-нагрузки — память в пике и память после drain.
