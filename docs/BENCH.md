@@ -17,11 +17,12 @@ bb bench.bb
 bb bench.bb --quick
 bb bench.bb --only=memory
 bb bench.bb --quick --only=memory
+bb bench.bb --quick --only=memory --memory-kind=peak
 bb bench.bb --scenario=publish-call-latency
 bb bench.bb --scenario=publish-end-to-end-latency --events=5000
 bb bench.bb --timeout-min=10
-bb bench.bb --mode=buffered --buffer-size=512 --concurrency=8
-bb bench.bb --mode=buffered --only=memory --events=5000 --payload-bytes=2048
+bb bench.bb --only=buffered --buffer-size=512 --concurrency=8
+bb bench.bb --only=memory --events=5000 --payload-bytes=2048
 bb bench.bb --events=20000 --latency-samples=2000 --subscribers=8
 bb bench.bb --backend=sqlite --tx-count=200 --tx-batch=10
 bb bench.bb --backend=filelog --fsync-interval-ms=2
@@ -35,21 +36,32 @@ bb bench.bb --backend=filelog --fsync-interval-ms=2
   стоимость самого вызова `publish`, без ожидания входа в handler.
 - `publish-end-to-end-latency`:
   время от вызова `publish` до входа в handler.
+  В summary дополнительно выводятся `delivered`, `expected`, `completion-rate`.
 - `publish-throughput`:
   throughput полного цикла publish -> delivery handler-у.
 - `buffered-backpressure`:
   доля отказов при переполнении очереди в `:buffered`.
 - `buffered-drain-behavior`:
   как быстро очередь опустошается после burst-нагрузки.
+  В summary дополнительно выводится `processed`, а `completed?` относится к реально принятым событиям.
 
 ### Memory
 
 - `publish-memory-baseline`:
   грубая оценка удержания heap после серии публикаций.
+  По умолчанию запускается в отдельной JVM, чтобы уменьшить влияние предыдущих сценариев.
 - `publish-memory-payload`:
   то же, но с более крупным payload.
+  По умолчанию запускается в отдельной JVM.
 - `buffered-memory-pressure`:
   как ведет себя heap при заполнении очереди в `:buffered`.
+  По умолчанию запускается в отдельной JVM.
+- `publish-peak-burst`:
+  грубая оценка пика heap во время burst-публикаций.
+  По умолчанию запускается в отдельной JVM.
+- `buffered-peak-pressure`:
+  грубая оценка пика heap при burst-нагрузке в `:buffered`.
+  По умолчанию запускается в отдельной JVM.
 
 ### Transact
 
@@ -64,6 +76,7 @@ bb bench.bb --backend=filelog --fsync-interval-ms=2
 - `--only`: группа сценариев: `publish`, `buffered`, `memory`, `transact`, `all`.
 - `--scenario`: запустить один конкретный сценарий.
 - `--mode`: `unlimited` или `buffered` (по умолчанию `unlimited`).
+  Для `--only=buffered` отдельный `--mode=buffered` не требуется: эти сценарии сами создают buffered bus.
 - `--buffer-size`: размер очереди в buffered режиме (по умолчанию `1024`).
 - `--concurrency`: количество worker‑ов в buffered режиме (по умолчанию `4`).
 - `--subscribers`: число подписчиков для publish тестов (по умолчанию `1`).
@@ -73,6 +86,10 @@ bb bench.bb --backend=filelog --fsync-interval-ms=2
 - `--warmup-iterations`: число прогревающих прогонов перед измерением.
 - `--measure-iterations`: число измеряемых прогонов.
 - `--drain-timeout-ms`: сколько ждать завершения обработки после публикации.
+- `--memory-isolated`: `true` или `false`; по умолчанию `true`.
+  Если `true`, memory-сценарии запускаются в отдельном процессе JVM.
+- `--memory-kind`: `retained`, `peak` или `all`; по умолчанию `retained`.
+  Используется для `--only=memory`, чтобы выбрать тип memory-метрик.
 - `--tx-count`: число транзакций в throughput‑тесте transact (по умолчанию `200`).
 - `--tx-batch`: число событий в одной transact‑транзакции (по умолчанию `1`).
 - `--backend`: `datahike`, `sqlite` или `filelog` (по умолчанию `sqlite`).
@@ -88,5 +105,7 @@ bb bench.bb --backend=filelog --fsync-interval-ms=2
 - Бенчмарки не входят в `bb test.bb`.
 - При `--backend=datahike` уровень логов для бенчмарков снижается до `WARN`, чтобы не засорять вывод.
 - Memory-сценарии используют грубую локальную оценку heap через JVM runtime и GC MXBeans.
+- По умолчанию memory-сценарии изолируются в отдельной JVM, чтобы уменьшить шум от предыдущих benchmark-ов в том же процессе.
+- `retained` и `peak` отвечают на разные вопросы и не должны смешиваться при интерпретации.
 - Memory-результаты полезны для сравнения режимов и поиска явного удержания памяти, но это не allocation profiler.
-- `--only=memory` в режиме `--mode=unlimited` не запускает buffered-only memory-сценарии.
+- При `--only=memory` buffered memory-сценарии тоже запускаются; отдельный `--mode=buffered` для этого не требуется.

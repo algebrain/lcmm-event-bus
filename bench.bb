@@ -81,6 +81,6 @@
   (started-at)
   (let [args (-> *command-line-args* bench-args maybe-add-defaults)
         suffix (if (seq args) (str " -- " (str/join " " args)) "")]
-    (run! (str "clj -J--enable-native-access=ALL-UNNAMED -M:bench-perf -m perf" suffix))))
+    (run! (str "clj -J--enable-native-access=ALL-UNNAMED -M:bench-perf -m perf.main" suffix))))
 
 (apply -main *command-line-args*)
