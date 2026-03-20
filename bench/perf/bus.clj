@@ -23,7 +23,7 @@
                                  :schema-flexibility :write}}
     :filelog {:db/type :filelog
               :filelog/config (cond-> {:path (str (File/createTempFile "event-bus-filelog-" ".log"))}
-                               (:fsync-interval-ms opts) (assoc :fsync-interval-ms (:fsync-interval-ms opts)))}
+                                (:fsync-interval-ms opts) (assoc :fsync-interval-ms (:fsync-interval-ms opts)))}
     :sqlite {:db/type :sqlite
              :sqlite/config (make-sqlite-config)}
     (throw (IllegalArgumentException.

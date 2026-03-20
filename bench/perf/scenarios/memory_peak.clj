@@ -55,9 +55,9 @@
        :peak-used-heap-kb (util/bytes->kb @peak*)
        :peak-delta-kb (util/bytes->kb (- @peak* baseline))}
       (finally
-       (reset! stop? true)
-       @sampler
-       (bus/close bus)))))
+        (reset! stop? true)
+        @sampler
+        (bus/close bus)))))
 
 (defn buffered-peak-pressure-fanout-run [{:keys [events payload-bytes drain-timeout-ms subscribers] :as opts}]
   (let [bus (bench-bus/make-bench-bus (assoc opts :mode :buffered))
