@@ -64,10 +64,10 @@
 
 (started-at)
 (banner "LINT")
-(run! "clj -J--enable-native-access=ALL-UNNAMED -M:lint")
+(run! "clojure -J--enable-native-access=ALL-UNNAMED -M:lint")
 
 (banner "TESTS")
-(run! "clj -J--enable-native-access=ALL-UNNAMED -M:test --reporter kaocha.report/documentation")
+(run! "clojure -J--enable-native-access=ALL-UNNAMED -M:test --reporter kaocha.report/documentation")
 
 (banner "FORMAT")
-(run! "clj -J--enable-native-access=ALL-UNNAMED -M:format")
+(run! "clojure -J--enable-native-access=ALL-UNNAMED -M:format")
